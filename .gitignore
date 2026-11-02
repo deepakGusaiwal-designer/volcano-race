@@ -1,0 +1,50 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Diagnostic / temporary outputs
+*.tsbuildinfo
+
+# Node / Dependency directories
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Environment variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Vite / Build tool cache
+.vite/
+
+# Raw unpacked 3D source assets (final runtime models are served from public/models/)
+hot-wheels-turbo-driver-volcano/
+mazda-lm-vision-wwwvecarzcom/
+*.vecarz.com.glb
+
+# Scratch & development helper scripts / debug textures
+calc_center.js
+calc_track_center.js
+scratch_*.png
+scratch/
