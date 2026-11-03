@@ -3,6 +3,7 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { CheckpointDef } from '../types/game';
 import { soundEffects } from '../audio/SoundEffects';
 import { ForzaTrackVisuals } from './ForzaTrackVisuals';
+import { useGameStore } from '../store/useGameStore';
 
 export class VolcanoTrack {
   public model: THREE.Group = new THREE.Group();
@@ -17,116 +18,14 @@ export class VolcanoTrack {
 
   private scene: THREE.Scene;
   private checkpointMarkers: THREE.Group[] = [];
-  private kerbEmissiveMapCache = new Map<THREE.Texture, THREE.CanvasTexture>();
-
-  // Applies high-visibility neon glow to the red and white racing curb strips & road markings
-  private applyKerbGlowToMaterial(mat: THREE.MeshStandardMaterial) {
-    if (!mat) return;
-
-    const processMap = () => {
-      const diffuseTex = mat.map;
-      if (!diffuseTex || !diffuseTex.image) return;
-
-      const img = diffuseTex.image;
-      const width = img.width || 512;
-      const height = img.height || 512;
-      if (width === 0 || height === 0) return;
-
-      let canvasTex = this.kerbEmissiveMapCache.get(diffuseTex);
-      if (!canvasTex) {
-        const canvas = document.createElement('canvas');
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d', { willReadFrequently: true });
-        if (ctx) {
-          ctx.drawImage(img, 0, 0, width, height);
-          const imgData = ctx.getImageData(0, 0, width, height);
-          const d = imgData.data;
-          const total = width * height * 4;
-
-          for (let i = 0; i < total; i += 4) {
-            const r = d[i];
-            const g = d[i + 1];
-            const b = d[i + 2];
-
-            // Tuned to exact Volcano.glb racetrack texture pixel data:
-            // Red curb rumble strips: vivid red (r > 110 and dominant over g and b)
-            const isRedCurb = r > 110 && (r - g) > 35 && (r - b) > 35;
-            // White curb rumble strips & road lines: bright white/light grey > 155
-            const isWhiteCurb = r > 155 && g > 155 && b > 155 && Math.abs(r - g) < 40 && Math.abs(g - b) < 40;
-
-            if (isRedCurb) {
-              // Glowing Neon Racing Red
-              d[i] = 255;
-              d[i + 1] = 28;
-              d[i + 2] = 12;
-              d[i + 3] = 255;
-            } else if (isWhiteCurb) {
-              // Brilliant Glowing Crisp White
-              d[i] = 255;
-              d[i + 1] = 255;
-              d[i + 2] = 255;
-              d[i + 3] = 255;
-            } else {
-              // Road asphalt surface, dirt, cracks: pure black (0 emission)
-              d[i] = 0;
-              d[i + 1] = 0;
-              d[i + 2] = 0;
-              d[i + 3] = 255;
-            }
-          }
-          ctx.putImageData(imgData, 0, 0);
-        }
-
-        // Standard Three.js CanvasTexture has flipY = true, matching WebGL texture upload for canvas
-        canvasTex = new THREE.CanvasTexture(canvas);
-        canvasTex.wrapS = diffuseTex.wrapS || THREE.RepeatWrapping;
-        canvasTex.wrapT = diffuseTex.wrapT || THREE.RepeatWrapping;
-        canvasTex.repeat.copy(diffuseTex.repeat);
-        canvasTex.offset.copy(diffuseTex.offset);
-        canvasTex.colorSpace = THREE.SRGBColorSpace;
-        canvasTex.needsUpdate = true;
-        this.kerbEmissiveMapCache.set(diffuseTex, canvasTex);
-      }
-
-      mat.emissiveMap = canvasTex;
-      mat.emissive = new THREE.Color(0xffffff);
-      mat.emissiveIntensity = 3.5; // Vivid, unmistakable luminous glow
-      mat.needsUpdate = true;
-    };
-
-    if (mat.map) {
-      const img = mat.map.image;
-      if (img instanceof HTMLImageElement && (!img.complete || img.width === 0)) {
-        img.addEventListener('load', () => processMap());
-      } else {
-        processMap();
-      }
-    }
-
-    // Direct GPU Fragment Shader Injection:
-    // Guarantees intense neon curb emission even with dynamic WebGL texture loading or extreme viewing angles
-    mat.customProgramCacheKey = () => 'glowing_kerb_strips_v6';
-    mat.onBeforeCompile = (shader) => {
-      shader.fragmentShader = shader.fragmentShader.replace(
-        '#include <emissivemap_fragment>',
-        `#include <emissivemap_fragment>
-        #ifdef USE_MAP
-          vec4 rawTex = texture2D( map, vMapUv );
-          // Vivid Neon Racing Red Curb Rumble Strips (linear RGB thresholds)
-          if (rawTex.r > 0.13 && (rawTex.r - rawTex.g) > 0.045 && (rawTex.r - rawTex.b) > 0.045) {
-            totalEmissiveRadiance += vec3(5.0, 0.45, 0.18);
-          }
-          // Brilliant High-Vis Crisp White Rumble Strips & Road Markings
-          else if (rawTex.r > 0.28 && rawTex.g > 0.28 && rawTex.b > 0.28 && abs(rawTex.r - rawTex.g) < 0.09 && abs(rawTex.g - rawTex.b) < 0.09) {
-            totalEmissiveRadiance += vec3(4.2, 4.2, 4.6);
-          }
-        #endif
-        `
-      );
-    };
-    mat.needsUpdate = true;
-  }
+  private lastHintTime = 0;
+  private prevHint: {
+    title: string;
+    direction: string;
+    severity: string;
+    distanceMeters: number;
+    safeSpeedKmH: number;
+  } | null = null;
 
   // Forward Circuit Checkpoints
   public checkpointsForward: CheckpointDef[] = [
@@ -169,7 +68,20 @@ export class VolcanoTrack {
       this.checkpoints = this.checkpointsForward.map((cp) => ({ ...cp }));
     }
     if (this.forzaVisuals && this.colliders.length > 0) {
+      const oldRails = new Set(this.forzaVisuals.railBarriers);
+      this.barriers = this.barriers.filter((b) => !oldRails.has(b));
       this.forzaVisuals.buildAllSystems(this.colliders, dir);
+      this.forzaVisuals.railBarriers.forEach((b) => {
+        const m = b as THREE.Mesh;
+        if (m.geometry && !m.userData.worldSphere) {
+          if (!m.geometry.boundingSphere) m.geometry.computeBoundingSphere();
+          if (m.geometry.boundingSphere) {
+            const s = m.geometry.boundingSphere.clone();
+            s.applyMatrix4(m.matrixWorld);
+            m.userData.worldSphere = s;
+          }
+        }
+      });
       this.barriers.push(...this.forzaVisuals.railBarriers);
     }
     this.rebuildCheckpointVisuals();
@@ -440,16 +352,42 @@ export class VolcanoTrack {
                   name.includes('gangplank')
                 ) {
                   // Drivable road surface with glowing red and white racing curb strips & markings
-                  // Primitive 0, 1, and 3 are all active, fully opaque, and drivable
-                  mat.transparent = false;
-                  mat.opacity = 1.0;
-                  mat.depthWrite = true;
-                  mat.depthTest = true;
-                  mat.side = THREE.FrontSide;
-                  mat.roughness = 0.55;
-                  mat.metalness = 0.08;
-
-                  this.applyKerbGlowToMaterial(mat);
+                  mesh.renderOrder = 0;
+                  const roadMats = (Array.isArray(mesh.material) ? mesh.material : [mesh.material]) as THREE.MeshStandardMaterial[];
+                  roadMats.forEach((m) => {
+                    if (!m) return;
+                    const mName = (m.name || '').toLowerCase();
+                    if (mName.includes('colwall') || mName.includes('9.2')) {
+                      // Invisible collision wall primitive
+                      m.transparent = true;
+                      m.opacity = 0.0;
+                      m.depthWrite = false;
+                      m.depthTest = true;
+                      m.side = THREE.DoubleSide;
+                    } else if (mName.includes('9.1') || mName.includes('lava') || mName.includes('magma')) {
+                      // Lava gap primitive: molten volcanic lava
+                      m.transparent = false;
+                      m.opacity = 1.0;
+                      m.depthWrite = true;
+                      m.depthTest = true;
+                      m.side = THREE.DoubleSide;
+                      if (lavaTexture) {
+                        m.map = lavaTexture;
+                        m.emissiveMap = lavaTexture;
+                        m.emissive = new THREE.Color(0xff4400);
+                        m.emissiveIntensity = 2.4;
+                      }
+                    } else {
+                      // Drivable road surface (Material 9.0) - authentic natural racetrack asphalt & curbs
+                      m.transparent = false;
+                      m.opacity = 1.0;
+                      m.depthWrite = true;
+                      m.depthTest = true;
+                      m.side = THREE.FrontSide;
+                      m.roughness = 0.50;
+                      m.metalness = 0.08;
+                    }
+                  });
                   this.colliders.push(mesh);
                 } else if (name.includes('ground')) {
                   // Island ground terrain surrounding the circuit: solid drivable off-road floor
@@ -521,6 +459,17 @@ export class VolcanoTrack {
           // 3. Build & Align all Track Rails, Festival Gantry, Curbs & Systems
           if (this.forzaVisuals) {
             this.forzaVisuals.buildAllSystems(this.colliders, this.trackDirection);
+            this.forzaVisuals.railBarriers.forEach((b) => {
+              const m = b as THREE.Mesh;
+              if (m.geometry && !m.userData.worldSphere) {
+                if (!m.geometry.boundingSphere) m.geometry.computeBoundingSphere();
+                if (m.geometry.boundingSphere) {
+                  const s = m.geometry.boundingSphere.clone();
+                  s.applyMatrix4(m.matrixWorld);
+                  m.userData.worldSphere = s;
+                }
+              }
+            });
             this.barriers.push(...this.forzaVisuals.railBarriers);
           }
 
@@ -577,7 +526,7 @@ export class VolcanoTrack {
     }
   }
 
-  update(delta: number, camera?: THREE.Camera) {
+  update(delta: number, camera?: THREE.Camera, carPos?: THREE.Vector3, carSpeedKmH: number = 0) {
     // 1. Billboarding smoke: every smoke plume quad faces the camera
     if (camera) {
       for (const sm of this.smokeMeshes) {
@@ -599,9 +548,32 @@ export class VolcanoTrack {
       }
     }
 
-    // 4. Update Forza Horizon Track Visuals (Flare Smoke Billowing & Pulse Lighting)
+    // 4. Update Forza Horizon Track Visuals (Driving Line, Turn Chevrons & Flare Smoke)
     if (this.forzaVisuals) {
-      this.forzaVisuals.update(delta, camera);
+      this.forzaVisuals.update(delta, camera, carPos, carSpeedKmH);
+      if (carPos) {
+        const nowMs = performance.now();
+        // Throttle road guidance queries to ~12 Hz and only dispatch when hint actually changes
+        if (nowMs - this.lastHintTime >= 85) {
+          this.lastHintTime = nowMs;
+          const hint = this.forzaVisuals.getUpcomingTurnHint(carPos, carSpeedKmH);
+          const prev = this.prevHint;
+          const isSame =
+            (!prev && !hint) ||
+            (prev &&
+              hint &&
+              prev.title === hint.title &&
+              prev.direction === hint.direction &&
+              prev.severity === hint.severity &&
+              Math.abs(prev.distanceMeters - hint.distanceMeters) < 2 &&
+              prev.safeSpeedKmH === hint.safeSpeedKmH);
+
+          if (!isSame) {
+            this.prevHint = hint ? { ...hint } : null;
+            useGameStore.getState().setRoadHint(hint);
+          }
+        }
+      }
     }
   }
 
@@ -635,8 +607,6 @@ export class VolcanoTrack {
     this.checkpointMarkers = [];
     this.colliders = [];
     this.barriers = [];
-    this.kerbEmissiveMapCache.forEach((tex) => tex.dispose());
-    this.kerbEmissiveMapCache.clear();
     if (this.forzaVisuals) {
       this.forzaVisuals.dispose();
     }

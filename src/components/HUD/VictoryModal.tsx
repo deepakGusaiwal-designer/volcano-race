@@ -1,6 +1,7 @@
-import React from 'react';
-import { Trophy, RotateCcw, Award, Star } from 'lucide-react';
+import React, { useEffect } from 'react';
+import { Trophy, RotateCcw, Award, Star, Car } from 'lucide-react';
 import { useGameStore } from '../../store/useGameStore';
+import { soundEffects } from '../../audio/SoundEffects';
 
 interface VictoryModalProps {
   onRestart: () => void;
@@ -12,6 +13,21 @@ export const VictoryModal: React.FC<VictoryModalProps> = ({ onRestart }) => {
   const totalTime = useGameStore((state) => state.totalTime);
   const bestLapTime = useGameStore((state) => state.bestLapTime);
   const coinsCollected = useGameStore((state) => state.coinsCollected);
+  const toggleCarSelect = useGameStore((state) => state.toggleCarSelect);
+
+  // Keyboard accessibility: Enter, Space, or R to race again
+  useEffect(() => {
+    if (!finished) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Enter' || e.key === ' ' || e.key === 'r' || e.key === 'R') {
+        e.preventDefault();
+        soundEffects.playCoin();
+        onRestart();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [finished, onRestart]);
 
   if (!finished) return null;
 
@@ -21,9 +37,28 @@ export const VictoryModal: React.FC<VictoryModalProps> = ({ onRestart }) => {
     return `${mins}:${secs.padStart(5, '0')}`;
   };
 
+  const handleRestartClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    soundEffects.playCoin();
+    onRestart();
+  };
+
+  const handleGarageClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    soundEffects.playCoin();
+    onRestart();
+    toggleCarSelect();
+  };
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md p-4 animate-in fade-in duration-300">
-      <div className="racing-panel rounded-3xl p-6 sm:p-8 max-w-md w-full border-2 border-orange-500 shadow-[0_0_50px_rgba(255,94,19,0.5)] flex flex-col items-center text-center">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-md p-4 animate-in fade-in duration-300 pointer-events-auto select-none"
+      onClick={(e) => e.stopPropagation()}
+    >
+      <div
+        className="racing-panel rounded-3xl p-6 sm:p-8 max-w-md w-full border-2 border-orange-500 shadow-[0_0_50px_rgba(255,94,19,0.5)] flex flex-col items-center text-center pointer-events-auto"
+        onClick={(e) => e.stopPropagation()}
+      >
         {/* Trophy Icon */}
         <div className="w-16 h-16 rounded-2xl bg-gradient-to-tr from-yellow-600 to-yellow-300 flex items-center justify-center mb-4 shadow-[0_0_25px_#ffbb00]">
           <Trophy className="w-9 h-9 text-black fill-black" />
@@ -74,14 +109,28 @@ export const VictoryModal: React.FC<VictoryModalProps> = ({ onRestart }) => {
           </div>
         </div>
 
-        {/* Play Again Button */}
-        <button
-          onClick={onRestart}
-          className="w-full py-3.5 bg-gradient-to-r from-orange-600 to-red-600 hover:from-orange-500 hover:to-red-500 text-white font-black tracking-wider text-base rounded-2xl shadow-[0_0_20px_#ff5e13] flex items-center justify-center space-x-2 transition-transform active:scale-95 mb-4"
-        >
-          <RotateCcw className="w-5 h-5" />
-          <span>RACE AGAIN</span>
-        </button>
+        {/* Action Buttons */}
+        <div className="flex flex-col space-y-2.5 w-full mb-4">
+          {/* Play Again Button */}
+          <button
+            type="button"
+            onClick={handleRestartClick}
+            className="w-full py-3.5 bg-gradient-to-r from-orange-600 to-red-600 hover:from-orange-500 hover:to-red-500 text-white font-black tracking-wider text-base rounded-2xl shadow-[0_0_20px_#ff5e13] flex items-center justify-center space-x-2 transition-transform active:scale-95 cursor-pointer pointer-events-auto"
+          >
+            <RotateCcw className="w-5 h-5" />
+            <span>RACE AGAIN</span>
+          </button>
+
+          {/* Select New Car Button */}
+          <button
+            type="button"
+            onClick={handleGarageClick}
+            className="w-full py-2.5 bg-white/10 hover:bg-white/20 text-gray-200 font-bold tracking-wider text-xs rounded-xl border border-white/10 flex items-center justify-center space-x-2 transition-transform active:scale-95 cursor-pointer pointer-events-auto"
+          >
+            <Car className="w-4 h-4 text-orange-400" />
+            <span>CHANGE VEHICLE</span>
+          </button>
+        </div>
 
         {/* Official Sponsor Footer */}
         <div className="flex items-center justify-center space-x-2 pt-2 border-t border-white/10 w-full">

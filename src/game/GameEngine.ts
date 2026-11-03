@@ -7,6 +7,7 @@ import { FollowCamera } from './FollowCamera';
 import { CinematicDirector } from './CinematicDirector';
 import { ParticleManager } from './ParticleManager';
 import { SkidmarkManager } from './SkidmarkManager';
+import { LightTrailManager } from './LightTrailManager';
 import { CompetitionManager } from './CompetitionManager';
 import { NitroPickupManager } from './NitroPickupManager';
 import { useGameStore } from '../store/useGameStore';
@@ -30,6 +31,7 @@ export class GameEngine {
   public cinematicDirector: CinematicDirector;
   public particleManager: ParticleManager;
   public skidmarkManager: SkidmarkManager;
+  public lightTrailManager: LightTrailManager;
   public nitroPickupManager: NitroPickupManager;
   private dirLight: THREE.DirectionalLight | null = null;
   private magmaLight: THREE.PointLight | null = null;
@@ -50,6 +52,7 @@ export class GameEngine {
   private lastFpsTime = performance.now();
   private currentFps = 60;
   private lastTelemetryTime = 0;
+  private smoothDelta = 0.0166;
 
   constructor(container: HTMLDivElement) {
     this.container = container;
@@ -90,6 +93,7 @@ export class GameEngine {
     // 5. Subsystems
     this.particleManager = new ParticleManager(this.scene);
     this.skidmarkManager = new SkidmarkManager(this.scene);
+    this.lightTrailManager = new LightTrailManager(this.scene);
     this.track = new VolcanoTrack(this.scene);
     this.vehicle = new VehicleController(this.scene, this.particleManager);
     this.vehicle.skidmarkManager = this.skidmarkManager;
@@ -331,6 +335,7 @@ export class GameEngine {
     this.vehicle.setSpawn(this.track.spawnPosition, this.track.spawnHeading);
     this.competitionManager.resetGrid(this.track.trackDirection);
     this.skidmarkManager.reset();
+    this.lightTrailManager.reset();
     this.followCamera.resetZoom();
     this.track.resetCoins();
     this.nitroPickupManager.resetAll();
@@ -372,7 +377,12 @@ export class GameEngine {
     const animate = () => {
       this.animationFrameId = requestAnimationFrame(animate);
 
-      const delta = Math.min(this.clock.getDelta(), 0.05);
+      const rawDelta = this.clock.getDelta();
+      // Clamp delta to prevent physics explosions on tab switch or micro-hiccups
+      const clampedDelta = Math.min(Math.max(rawDelta, 0.001), 0.038);
+      // Low-pass exponential smoothing filter eliminates frame-to-frame delta jitter
+      this.smoothDelta = this.smoothDelta * 0.82 + clampedDelta * 0.18;
+      const delta = this.smoothDelta;
       const now = performance.now();
 
       // FPS tracking
@@ -397,7 +407,7 @@ export class GameEngine {
       });
 
       // 3. Track & Checkpoints Rules
-      this.track.update(delta, this.camera);
+      this.track.update(delta, this.camera, this.vehicle.position, Math.abs(this.vehicle.speedKmH));
 
       if (!this.isFinished) {
         this.track.checkCheckpoints(
@@ -446,10 +456,11 @@ export class GameEngine {
         });
       }
 
-      // 3. Dynamic Particles, Nitro Pickups and Tire Skidmarks
+      // 3. Dynamic Particles, Nitro Pickups, Tire Skidmarks & Asphalt Light Trails
       this.nitroPickupManager.update(delta, this.vehicle, this.competitionManager.aiCars, this.particleManager);
       this.particleManager.update(delta, this.vehicle.position);
       this.skidmarkManager.update(delta);
+      this.lightTrailManager.update(delta, this.vehicle, this.competitionManager.aiCars);
 
       // 4. Camera Update
       const store = useGameStore.getState();
@@ -536,6 +547,7 @@ export class GameEngine {
     this.competitionManager.dispose();
     this.nitroPickupManager.dispose();
     this.skidmarkManager.dispose();
+    this.lightTrailManager.dispose();
     this.vehicle.dispose();
     this.renderer.dispose();
     if (this.renderer.domElement.parentElement) {

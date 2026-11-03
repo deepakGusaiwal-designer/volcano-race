@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { CarModelId, TelemetryData } from '../types/game';
+import { CarModelId, TelemetryData, RoadHintData } from '../types/game';
 
 interface GameStore extends TelemetryData {
   isLoading: boolean;
@@ -9,9 +9,11 @@ interface GameStore extends TelemetryData {
   paused: boolean;
   notification: string | null;
   isCarSelectOpen: boolean;
+  roadHint: RoadHintData | null;
 
   // Actions
   updateTelemetry: (data: Partial<TelemetryData>) => void;
+  setRoadHint: (hint: RoadHintData | null) => void;
   setLoading: (isLoading: boolean, message?: string, progress?: number) => void;
   startGame: () => void;
   setPaused: (paused: boolean) => void;
@@ -64,8 +66,10 @@ export const useGameStore = create<GameStore>((set, get) => ({
   paused: false,
   notification: null,
   isCarSelectOpen: false,
+  roadHint: null,
 
   updateTelemetry: (data) => set((state) => ({ ...state, ...data })),
+  setRoadHint: (roadHint) => set({ roadHint }),
   setLoading: (isLoading, message, progress) =>
     set((state) => ({
       isLoading,

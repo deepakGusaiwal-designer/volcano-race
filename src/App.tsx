@@ -3,10 +3,10 @@ import { GameEngine } from './game/GameEngine';
 import { useGameStore } from './store/useGameStore';
 import { Speedometer } from './components/HUD/Speedometer';
 import { LapCounter } from './components/HUD/LapCounter';
-import { ControlsHelp } from './components/HUD/ControlsHelp';
 import { NotificationToast } from './components/HUD/NotificationToast';
 import { VictoryModal } from './components/HUD/VictoryModal';
 import { CarSelectModal } from './components/HUD/CarSelectModal';
+import { RoadHint } from './components/HUD/RoadHint';
 
 export const App: React.FC = () => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -100,34 +100,29 @@ export const App: React.FC = () => {
       {/* In-Game HUD Elements */}
       {!isLoading && (
         <div className="absolute inset-0 pointer-events-none p-4 sm:p-6 flex flex-col justify-between z-10">
-          {/* Top Row: Lap & Checkpoint Counter */}
+          {/* Top Row: Lap Counter & Dynamic Road Hint */}
           <div className="flex items-start justify-between w-full pointer-events-auto">
             <LapCounter />
+            <div className="flex-1 flex justify-center px-4">
+              <RoadHint />
+            </div>
+            <div className="hidden sm:block w-28" />
           </div>
 
           {/* Center Notifications */}
           <NotificationToast />
 
-          {/* Bottom Area: Speedometer & Action Controls */}
+          {/* Bottom Area: Speedometer */}
           <div className="flex flex-col space-y-3 w-full">
             <div className="self-end pointer-events-auto">
               <Speedometer />
             </div>
-
-            <ControlsHelp
-              onReset={handleReset}
-              onToggleCamera={handleToggleCamera}
-              onZoomIn={handleZoomIn}
-              onZoomOut={handleZoomOut}
-              onCycleCarScale={() => engineRef.current?.cycleCarScale()}
-              onToggleTrackDirection={handleToggleTrackDirection}
-            />
           </div>
-
-          {/* Victory Modal on 3 Laps Finished */}
-          <VictoryModal onRestart={handleReset} />
         </div>
       )}
+
+      {/* Victory Modal on 3 Laps Finished (Full Interactive Overlay) */}
+      <VictoryModal onRestart={handleReset} />
 
       {/* Garage / Vehicle Selection Modal (Full Interactive Overlay) */}
       <CarSelectModal onSelectCar={(id) => engineRef.current?.switchCar(id)} />

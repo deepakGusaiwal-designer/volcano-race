@@ -96,3 +96,11 @@ export interface CheckpointDef {
   radius: number;
   passed: boolean;
 }
+
+export interface RoadHintData {
+  title: string;
+  direction: 'left' | 'right' | 'chicane' | 'straight';
+  distanceMeters: number;
+  safeSpeedKmH: number;
+  severity: 'safe' | 'caution' | 'brake';
+}

@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { CIRCUIT_WAYPOINTS } from './CompetitionManager';
+import { RoadHintData } from '../types/game';
 
 export interface CheckpointVisualDef {
   index: number;
@@ -27,6 +28,29 @@ export class ForzaTrackVisuals {
   private downVec = new THREE.Vector3(0, -1, 0);
   private probeOrigin = new THREE.Vector3();
   private nascarTextureCache = new Map<string, THREE.CanvasTexture>();
+  private trackDirection: 'normal' | 'reverse' = 'reverse';
+  private turnChevronMaterials: THREE.MeshStandardMaterial[] = [];
+  private turnChevronTextureLeft: THREE.CanvasTexture | null = null;
+  private turnChevronTextureRight: THREE.CanvasTexture | null = null;
+  private drivingLineMesh: THREE.InstancedMesh | null = null;
+  private drivingLineSegments: Array<{
+    pos: THREE.Vector3;
+    driveDir: THREE.Vector3;
+    u: number;
+    safeSpeedKmH: number;
+    turnDirection: 'left' | 'right' | 'straight';
+    turnName: string;
+    baseColor: THREE.Color;
+  }> = [];
+  private drivingLineTexture: THREE.CanvasTexture | null = null;
+  private colorCyan = new THREE.Color(0x00e5ff);
+  private colorYellow = new THREE.Color(0xffb700);
+  private colorRed = new THREE.Color(0xff1744);
+  private tempColor = new THREE.Color();
+  private carToSegVec = new THREE.Vector3();
+  private lastClosestIdx = 0;
+  private lastGuidelineUpdateTime = 0;
+  public closestCarSegmentIdx = 0;
 
   constructor(scene: THREE.Scene) {
     this.scene = scene;
@@ -95,15 +119,15 @@ export class ForzaTrackVisuals {
     baselineY: number,
     roadMeshes: THREE.Object3D[]
   ): { hit: boolean; y: number } {
-    this.probeOrigin.set(x, baselineY + 1.8, z);
+    this.probeOrigin.set(x, baselineY + 2.5, z);
     this.probeRaycaster.set(this.probeOrigin, this.downVec);
-    this.probeRaycaster.far = 3.6;
+    this.probeRaycaster.far = 5.0;
 
     const hits = this.probeRaycaster.intersectObjects(roadMeshes, true);
     for (const h of hits) {
       if (h.face) {
         const norm = h.face.normal.clone().transformDirection(h.object.matrixWorld).normalize();
-        if (norm.y >= 0.35 && Math.abs(h.point.y - baselineY) < 1.2) {
+        if (norm.y >= 0.30 && Math.abs(h.point.y - baselineY) < 2.2) {
           return { hit: true, y: h.point.y };
         }
       }
@@ -127,9 +151,10 @@ export class ForzaTrackVisuals {
     let lastDist = defaultHalfWidth;
     let lastY = baselineY;
     let foundRoad = false;
+    let consecutiveMisses = 0;
 
-    // Search outwards from 0.20m to 6.8m in precise 0.08m increments
-    for (let d = 0.20; d <= 6.8; d += 0.08) {
+    // Search outwards from 0.20m to 8.5m in precise 0.08m increments
+    for (let d = 0.20; d <= 8.5; d += 0.08) {
       const qx = pt.x + norm.x * d * side;
       const qz = pt.z + norm.z * d * side;
       const probe = this.probeRoadPoint(qx, qz, baselineY, roadMeshes);
@@ -138,18 +163,22 @@ export class ForzaTrackVisuals {
         lastDist = d;
         lastY = probe.y;
         foundRoad = true;
+        consecutiveMisses = 0;
       } else {
         if (foundRoad) {
-          // Reached the true edge of the asphalt road!
-          break;
+          consecutiveMisses++;
+          // Require at least 4 consecutive misses (0.32m) to avoid breaking on triangulated road mesh seams
+          if (consecutiveMisses >= 4) {
+            break;
+          }
         }
       }
     }
 
     // Guard against road gap collapses (e.g. over lava pit, open air ramps, or broken road edges):
-    // Road half-width is strictly >= 2.2m. Any reading < 2.1m was a gap collapse into the drivable lane!
-    if (!foundRoad || lastDist < 2.10) {
-      lastDist = defaultHalfWidth;
+    // Road half-width is strictly >= 2.5m. Any reading < 2.5m was a gap collapse into the drivable lane!
+    if (!foundRoad || lastDist < 2.50) {
+      lastDist = Math.max(defaultHalfWidth, 3.8);
       lastY = baselineY;
     }
 
@@ -228,27 +257,22 @@ export class ForzaTrackVisuals {
   // Master Build: Aligns All Rails & Systems with Track Geometry
   // -------------------------------------------------------------
   public buildAllSystems(colliders: THREE.Object3D[], direction: 'normal' | 'reverse' = 'reverse') {
+    this.trackDirection = direction;
     this.clearDynamicVisuals();
 
-    // 1. Continuous Safety Barrier Rails (Armco Track Guard Rails)
-    // DISABLED: Procedural rails across organic 3D geometry cause road blocks, misplaced posts,
-    // and collision proxy barriers. The 3D model already has natural mountain walls and borders.
+    // 1. Safety Barrier Rails (Disabled per user request)
     this.railBarriers = [];
 
     // 2. Start / Finish Gantry & Numbered Grid Boxes
     this.buildStartFinishGantry(colliders, direction);
 
-    // 3. Spline-Aligned Apex Racing Curbs (Rumble Strips)
-    // DISABLED: Volcano.glb specialroad already has high-res red-and-white rumble curbs baked in.
-    // Procedural boxes caused floating collision/geometry artifacts over the water.
+    // 3. Dynamic Forza Horizon Driving Guideline (Center of Road)
+    this.buildForzaHorizonDrivingLine(colliders, direction);
 
-    // 4. Ground-Raycast Dashed Centerline Markings
-    this.buildRoadCenterlineMarkings(colliders);
+    // 4. Trackside Glowing Turn Chevrons (Curve Indicators & Hints)
+    this.buildTracksideTurnChevrons(colliders, direction);
 
-    // 5. Unnecessary Hoardings Removed:
-    // Cluttered yellow chevrons and distance boards on sticks removed per user request.
-
-    // 6. Authentic NASCAR Cup Series Trackside Advertisements
+    // 5. Authentic NASCAR Cup Series Trackside Advertisements
     this.buildNascarTracksideAdvertisements(colliders, direction);
   }
 
@@ -259,6 +283,20 @@ export class ForzaTrackVisuals {
     }
     this.railBarriers = [];
     this.checkpointGates = [];
+    if (this.drivingLineTexture) {
+      this.drivingLineTexture.dispose();
+      this.drivingLineTexture = null;
+    }
+    if (this.drivingLineMesh) {
+      this.drivingLineMesh.geometry.dispose();
+      (this.drivingLineMesh.material as THREE.Material).dispose();
+      this.drivingLineMesh = null;
+    }
+    this.drivingLineSegments = [];
+    for (const mat of this.turnChevronMaterials) {
+      mat.dispose();
+    }
+    this.turnChevronMaterials = [];
     for (const p of this.flareParticles) {
       this.scene.remove(p.mesh);
       p.mesh.geometry.dispose();
@@ -268,360 +306,6 @@ export class ForzaTrackVisuals {
     this.animatedLightBars = [];
   }
 
-  // -------------------------------------------------------------
-  // 1. Continuous Safety Barrier Rails (Armco Track Guard Rails)
-  // High-performance InstancedMesh implementation: cuts ~1,000 draw calls down to 4
-  // -------------------------------------------------------------
-  private buildContinuousTrackRails(colliders: THREE.Object3D[]) {
-    const railsGroup = new THREE.Group();
-    railsGroup.name = 'TrackRails';
-
-    const segments = 160;
-    const postGeo = new THREE.CylinderGeometry(0.025, 0.025, 0.44, 8);
-    const postMat = new THREE.MeshStandardMaterial({
-      color: 0x22262d,
-      metalness: 0.85,
-      roughness: 0.35,
-    });
-
-    const unitRailGeo = new THREE.BoxGeometry(0.05, 0.09, 1.0);
-    const railMat = new THREE.MeshStandardMaterial({
-      color: 0xd8dde6,
-      metalness: 0.88,
-      roughness: 0.22,
-    });
-
-    const reflectorRed = new THREE.MeshStandardMaterial({
-      color: 0xff1744,
-      emissive: new THREE.Color(0xff1744),
-      emissiveIntensity: 0.7,
-      roughness: 0.3,
-    });
-    const reflectorWhite = new THREE.MeshStandardMaterial({
-      color: 0xffffff,
-      emissive: new THREE.Color(0xffffff),
-      emissiveIntensity: 0.7,
-      roughness: 0.3,
-    });
-
-    const totalPosts = segments * 2;
-    const totalRails = segments * 4;
-    const refCountPerSide = Math.ceil(segments / 3); // 54
-
-    const postsInstanced = new THREE.InstancedMesh(postGeo, postMat, totalPosts);
-    postsInstanced.instanceMatrix.setUsage(THREE.StaticDrawUsage);
-    postsInstanced.castShadow = true;
-    postsInstanced.receiveShadow = true;
-
-    const railsInstanced = new THREE.InstancedMesh(unitRailGeo, railMat, totalRails);
-    railsInstanced.instanceMatrix.setUsage(THREE.StaticDrawUsage);
-    railsInstanced.castShadow = true;
-    railsInstanced.receiveShadow = true;
-
-    const refGeo = new THREE.PlaneGeometry(0.08, 0.09);
-    const refRedInstanced = new THREE.InstancedMesh(refGeo, reflectorRed, refCountPerSide);
-    refRedInstanced.instanceMatrix.setUsage(THREE.StaticDrawUsage);
-
-    const refWhiteInstanced = new THREE.InstancedMesh(refGeo, reflectorWhite, refCountPerSide);
-    refWhiteInstanced.instanceMatrix.setUsage(THREE.StaticDrawUsage);
-
-    // 1. Filter drivable road floor meshes
-    const roadMeshes = this.getRoadMeshes(colliders);
-
-    // 2. Sample spline centerline, tangents, lateral normals, and true road surface elevations
-    const splinePts: THREE.Vector3[] = [];
-    const splineTans: THREE.Vector3[] = [];
-    const splineNorms: THREE.Vector3[] = [];
-    const trueRoadYs: number[] = [];
-    for (let i = 0; i < segments; i++) {
-      const u = i / segments;
-      const pt = this.trackSpline.getPointAt(u);
-      const tan = this.trackSpline.getTangentAt(u).normalize();
-      splinePts.push(pt);
-      splineTans.push(tan);
-      splineNorms.push(new THREE.Vector3(-tan.z, 0, tan.x).normalize());
-
-      let y = this.getTrueRoadHeight(pt.x, pt.z, roadMeshes, -0.385);
-      // Clamp open air jump ramp gap over lava pit
-      if (y < -0.85) {
-        y = -0.385;
-      }
-      trueRoadYs.push(y);
-    }
-
-    // 3. Measure actual road edge distance and surface Y outwards along normal
-    const rawLeftDist: number[] = [];
-    const rawRightDist: number[] = [];
-    const rawLeftY: number[] = [];
-    const rawRightY: number[] = [];
-    for (let i = 0; i < segments; i++) {
-      const pt = splinePts[i];
-      const norm = splineNorms[i];
-      const baseY = trueRoadYs[i];
-
-      const edgeL = this.findRoadEdge(pt, norm, -1, baseY, roadMeshes);
-      const edgeR = this.findRoadEdge(pt, norm, 1, baseY, roadMeshes);
-
-      rawLeftDist.push(edgeL.dist);
-      rawRightDist.push(edgeR.dist);
-      rawLeftY.push(edgeL.y);
-      rawRightY.push(edgeR.y);
-    }
-
-    // 4. Multi-pass circular smoothing on both edge distance and surface elevation
-    const smoothCircular = (arr: number[]) => {
-      const n = arr.length;
-      const res = new Array<number>(n);
-      for (let i = 0; i < n; i++) {
-        const prev = arr[(i - 1 + n) % n];
-        const curr = arr[i];
-        const next = arr[(i + 1) % n];
-        res[i] = prev * 0.25 + curr * 0.5 + next * 0.25;
-      }
-      return res;
-    };
-
-    let leftDists = rawLeftDist;
-    let rightDists = rawRightDist;
-    let leftYs = rawLeftY;
-    let rightYs = rawRightY;
-    for (let p = 0; p < 3; p++) {
-      leftDists = smoothCircular(leftDists);
-      rightDists = smoothCircular(rightDists);
-      leftYs = smoothCircular(leftYs);
-      rightYs = smoothCircular(rightYs);
-    }
-
-    // 5. Precompute post 3D positions firmly anchored to the smoothed road edge shoulder
-    const sidePosts: { left: THREE.Vector3[]; right: THREE.Vector3[] } = {
-      left: [],
-      right: [],
-    };
-
-    for (let i = 0; i < segments; i++) {
-      const pt = splinePts[i];
-      const norm = splineNorms[i];
-      const minHalfWidth = this.getRoadHalfWidth(i / segments, pt);
-
-      // Left post (verge margin +0.04m, strictly clamped to outside road shoulder)
-      const lDist = Math.max(minHalfWidth * 0.95, leftDists[i] + 0.04);
-      const lPostX = pt.x - norm.x * lDist;
-      const lPostZ = pt.z - norm.z * lDist;
-      const lPostY = Math.max(-0.60, leftYs[i]);
-      sidePosts.left.push(new THREE.Vector3(lPostX, lPostY, lPostZ));
-
-      // Right post (verge margin +0.04m, strictly clamped to outside road shoulder)
-      const rDist = Math.max(minHalfWidth * 0.95, rightDists[i] + 0.04);
-      const rPostX = pt.x + norm.x * rDist;
-      const rPostZ = pt.z + norm.z * rDist;
-      const rPostY = Math.max(-0.60, rightYs[i]);
-      sidePosts.right.push(new THREE.Vector3(rPostX, rPostY, rPostZ));
-    }
-
-    const dummy = new THREE.Object3D();
-    const tempMid = new THREE.Vector3();
-    const tempEnd = new THREE.Vector3();
-    let postIdx = 0;
-    let railIdx = 0;
-    let redRefIdx = 0;
-    let whiteRefIdx = 0;
-
-    // Helper: 2D line segment intersection in the XZ ground plane
-    const segmentsIntersectXZ = (
-      a1: THREE.Vector3,
-      a2: THREE.Vector3,
-      b1: THREE.Vector3,
-      b2: THREE.Vector3
-    ): boolean => {
-      const ccw = (A: THREE.Vector3, B: THREE.Vector3, C: THREE.Vector3) =>
-        (C.z - A.z) * (B.x - A.x) > (B.z - A.z) * (C.x - A.x);
-      return (
-        ccw(a1, b1, b2) !== ccw(a2, b1, b2) &&
-        ccw(a1, a2, b1) !== ccw(a1, a2, b2)
-      );
-    };
-
-    const sides: ('left' | 'right')[] = ['left', 'right'];
-
-    sides.forEach((sideKey) => {
-      const posts = sidePosts[sideKey];
-      const sideSign = sideKey === 'right' ? 1 : -1;
-      const validRails = new Array<boolean>(segments).fill(false);
-
-      // Pass 1: Strict Comprehensive Safety Validation for Every Rail Segment
-      for (let i = 0; i < segments; i++) {
-        const u = i / segments;
-        const nextIdx = (i + 1) % segments;
-        const p1 = posts[i];
-        const p2 = posts[nextIdx];
-        const pt = splinePts[i];
-        const tan = splineTans[i];
-
-        // 1. Never build railings across the open-air lava jump ramp
-        const isJumpRampZone =
-          (u >= 0.025 && u <= 0.075) ||
-          (p1.x > -4.0 && p1.x < 10.0 && p1.z > 8.0 && p1.z < 12.8) ||
-          (p2.x > -4.0 && p2.x < 10.0 && p2.z > 8.0 && p2.z < 12.8);
-
-        // 2. Centerline clearance: endpoints must be firmly outside centerline
-        const d1ToSpline = p1.distanceTo(pt);
-        const d2ToSpline = p2.distanceTo(splinePts[nextIdx]);
-
-        // 3. Segment length and directional alignment
-        const segLen = p1.distanceTo(p2);
-        const railDir = new THREE.Vector3(p2.x - p1.x, 0, p2.z - p1.z).normalize();
-        const dotTan = railDir.dot(new THREE.Vector3(tan.x, 0, tan.z).normalize());
-
-        // 4. Centerline intersection: segment must never cross centerline anywhere on track
-        let crossesCenterline = false;
-        for (let j = 0; j < segments; j++) {
-          const jNext = (j + 1) % segments;
-          if (segmentsIntersectXZ(p1, p2, splinePts[j], splinePts[jNext])) {
-            crossesCenterline = true;
-            break;
-          }
-        }
-
-        let isValid =
-          !isJumpRampZone &&
-          !crossesCenterline &&
-          d1ToSpline >= 1.85 &&
-          d2ToSpline >= 1.85 &&
-          dotTan >= 0.30 &&
-          segLen >= 0.25 &&
-          segLen <= 2.95;
-
-        // 5. Strict Physical Lane Clearance: probe 5 points along segment against roadMeshes
-        // If ANY sample point lands inside the drivable road lane, reject the rail!
-        if (isValid) {
-          for (let s = 0; s <= 4; s++) {
-            const frac = s / 4;
-            const testX = p1.x * (1 - frac) + p2.x * frac;
-            const testZ = p1.z * (1 - frac) + p2.z * frac;
-            let minD = Infinity;
-            for (let k = 0; k < segments; k++) {
-              const d = Math.hypot(testX - splinePts[k].x, testZ - splinePts[k].z);
-              if (d < minD) minD = d;
-            }
-            if (minD < 1.75 && this.probeRoadPoint(testX, testZ, p1.y, roadMeshes).hit) {
-              isValid = false;
-              break;
-            }
-          }
-        }
-
-        validRails[i] = isValid;
-      }
-
-      // Pass 2: Place Posts, Reflectors, Horizontal Rails, and Collision Proxies
-      for (let i = 0; i < segments; i++) {
-        const prevIdx = (i - 1 + segments) % segments;
-        const nextIdx = (i + 1) % segments;
-        const p1 = posts[i];
-        const tan = splineTans[i];
-        const norm = splineNorms[i];
-
-        // A post is ONLY placed if connected to at least one valid accepted rail segment!
-        // This eliminates all orphaned posts standing in the road where rails were rejected.
-        const hasAdjacentValidRail = validRails[i] || validRails[prevIdx];
-
-        // Ensure post itself does not encroach inside the drivable road lane
-        let minPostD = Infinity;
-        for (let k = 0; k < segments; k++) {
-          const d = Math.hypot(p1.x - splinePts[k].x, p1.z - splinePts[k].z);
-          if (d < minPostD) minPostD = d;
-        }
-        const isPostInLane = minPostD < 1.75 && this.probeRoadPoint(p1.x, p1.z, p1.y, roadMeshes).hit;
-
-        if (hasAdjacentValidRail && !isPostInLane) {
-          dummy.position.set(p1.x, p1.y + 0.22, p1.z);
-          dummy.rotation.set(0, 0, 0);
-          dummy.scale.set(1, 1, 1);
-          dummy.updateMatrix();
-          postsInstanced.setMatrixAt(postIdx++, dummy.matrix);
-
-          // Trackside Reflector Plates on posts
-          if (i % 3 === 0) {
-            dummy.position.set(
-              p1.x - norm.x * (sideSign * 0.035),
-              p1.y + 0.30,
-              p1.z - norm.z * (sideSign * 0.035)
-            );
-            const heading = Math.atan2(tan.x, tan.z);
-            dummy.rotation.order = 'YXZ';
-            dummy.rotation.set(0, heading + (sideSign === 1 ? -Math.PI / 2 : Math.PI / 2), 0);
-            dummy.scale.set(1, 1, 1);
-            dummy.updateMatrix();
-
-            if (sideSign === 1) {
-              if (redRefIdx < refCountPerSide) {
-                refRedInstanced.setMatrixAt(redRefIdx++, dummy.matrix);
-              }
-            } else {
-              if (whiteRefIdx < refCountPerSide) {
-                refWhiteInstanced.setMatrixAt(whiteRefIdx++, dummy.matrix);
-              }
-            }
-          }
-        }
-
-        // Render Horizontal Rails and Collision Box ONLY for valid accepted rail segments
-        if (validRails[i]) {
-          const p2 = posts[nextIdx];
-          const segLen = p1.distanceTo(p2);
-
-          // Dual Continuous Horizontal W-beam Rails (sleek low profile, clear view over barriers)
-          [0.14, 0.28].forEach((hOffset) => {
-            tempMid.set(
-              (p1.x + p2.x) * 0.5,
-              (p1.y + p2.y) * 0.5 + hOffset,
-              (p1.z + p2.z) * 0.5
-            );
-            tempEnd.set(p2.x, p2.y + hOffset, p2.z);
-
-            dummy.position.copy(tempMid);
-            dummy.lookAt(tempEnd);
-            dummy.scale.set(1, 1, segLen);
-            dummy.updateMatrix();
-            railsInstanced.setMatrixAt(railIdx++, dummy.matrix);
-          });
-
-          // Invisible Physical Collision Proxy Box bridging Post i to Post i+1 (height 0.48m)
-          const colGeo = new THREE.BoxGeometry(0.14, 0.48, 1.0);
-          const colMesh = new THREE.Mesh(colGeo);
-          colMesh.visible = false;
-          colMesh.position.set(
-            (p1.x + p2.x) * 0.5,
-            (p1.y + p2.y) * 0.5 + 0.24,
-            (p1.z + p2.z) * 0.5
-          );
-          colMesh.lookAt(p2.x, p2.y + 0.24, p2.z);
-          colMesh.scale.set(1, 1, segLen);
-          colMesh.updateMatrix();
-          colMesh.updateMatrixWorld(true);
-          railsGroup.add(colMesh);
-          this.railBarriers.push(colMesh);
-        }
-      }
-    });
-
-    postsInstanced.count = postIdx;
-    railsInstanced.count = railIdx;
-    refRedInstanced.count = redRefIdx;
-    refWhiteInstanced.count = whiteRefIdx;
-
-    postsInstanced.instanceMatrix.needsUpdate = true;
-    railsInstanced.instanceMatrix.needsUpdate = true;
-    refRedInstanced.instanceMatrix.needsUpdate = true;
-    refWhiteInstanced.instanceMatrix.needsUpdate = true;
-
-    railsGroup.add(postsInstanced);
-    railsGroup.add(railsInstanced);
-    railsGroup.add(refRedInstanced);
-    railsGroup.add(refWhiteInstanced);
-
-    this.group.add(railsGroup);
-  }
 
   // -------------------------------------------------------------
   // 2. Start / Finish Gantry & Numbered Grid Boxes
@@ -906,64 +590,462 @@ export class ForzaTrackVisuals {
   }
 
   // -------------------------------------------------------------
-  // 4. Ground-Raycast Dashed Centerline Markings
-  // InstancedMesh implementation: cuts 65 draw calls down to 1
+  // 3. Authentic Forza Horizon Dynamic Racing Guideline (Center of Road)
+  // High-density holographic laser chevron ribbon projected flush onto the asphalt centerline.
+  // Real-time speed & braking zones: Cyan (Flat out) -> Amber (Prepare) -> Red (Hard Brake)
+  // High-performance InstancedMesh: 520 chevrons in a SINGLE draw call at locked 60 FPS
   // -------------------------------------------------------------
-  private buildRoadCenterlineMarkings(colliders: THREE.Object3D[]) {
-    const roadMarkings = new THREE.Group();
-    roadMarkings.name = 'CenterlineMarkings';
+  private createDrivingLineChevronTexture(): THREE.CanvasTexture {
+    if (this.drivingLineTexture) return this.drivingLineTexture;
 
-    const totalSamples = 130;
-    const dashCount = Math.floor(totalSamples / 2); // 65
-    const dashMat = new THREE.MeshStandardMaterial({
-      color: 0xffffff,
-      roughness: 0.55,
+    const canvas = document.createElement('canvas');
+    canvas.width = 256;
+    canvas.height = 256;
+    const ctx = canvas.getContext('2d')!;
+
+    ctx.clearRect(0, 0, 256, 256);
+
+    // Continuous dual outer guide rails along the lane edges (seamless pinstripes linking segments)
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.45)';
+    ctx.fillRect(26, 0, 5, 256);
+    ctx.fillRect(225, 0, 5, 256);
+
+    // Continuous central laser core spine running through the entire ribbon
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.75)';
+    ctx.fillRect(125, 0, 6, 256);
+
+    // Iconic Forza Horizon aerodynamic double-chevron arrows pointing forward
+    const drawChevron = (cy: number, width: number, thickness: number, alpha: number) => {
+      ctx.fillStyle = `rgba(255, 255, 255, ${alpha})`;
+      ctx.beginPath();
+      const tipY = cy - 44;
+      const leftX = 128 - width * 0.5;
+      const rightX = 128 + width * 0.5;
+      const baseY = cy + 20;
+
+      ctx.moveTo(128, tipY);
+      ctx.lineTo(rightX, baseY);
+      ctx.lineTo(rightX, baseY + thickness);
+      ctx.lineTo(128, tipY + thickness);
+      ctx.lineTo(leftX, baseY + thickness);
+      ctx.lineTo(leftX, baseY);
+      ctx.closePath();
+      ctx.fill();
+    };
+
+    // Soft outer neon bloom glow
+    ctx.shadowColor = '#ffffff';
+    ctx.shadowBlur = 12;
+
+    // Double chevron aerodynamic wings - dense, vibrant, high-contrast
+    drawChevron(168, 168, 28, 0.95); // Rear Chevron wing
+    drawChevron(96, 146, 26, 1.0);   // Lead Chevron tip
+
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.wrapS = THREE.ClampToEdgeWrapping;
+    tex.wrapT = THREE.ClampToEdgeWrapping;
+    this.drivingLineTexture = tex;
+    return tex;
+  }
+
+  private buildForzaHorizonDrivingLine(
+    colliders: THREE.Object3D[],
+    direction: 'normal' | 'reverse' = 'reverse'
+  ) {
+    const lineGroup = new THREE.Group();
+    lineGroup.name = 'ForzaHorizonDrivingLine';
+    const roadMeshes = this.getRoadMeshes(colliders);
+
+    const totalSegments = 520;
+    // Sleek narrow dense racing ribbon (0.38m width, 0.52m length)
+    const chevronGeo = new THREE.PlaneGeometry(0.38, 0.52);
+    chevronGeo.rotateX(-Math.PI / 2); // Lay flat on XZ plane with normal +Y
+
+    const chevronTex = this.createDrivingLineChevronTexture();
+    const lineMat = new THREE.MeshBasicMaterial({
+      map: chevronTex,
       transparent: true,
-      opacity: 0.85,
+      opacity: 0.95,
+      blending: THREE.AdditiveBlending,
       depthWrite: false,
+      depthTest: true,
+      polygonOffset: true,
+      polygonOffsetFactor: -4.0,
+      polygonOffsetUnits: -4.0,
+      side: THREE.DoubleSide,
     });
 
-    const unitDashGeo = new THREE.PlaneGeometry(0.18, 1.0);
-    const dashesInstanced = new THREE.InstancedMesh(unitDashGeo, dashMat, dashCount);
-    dashesInstanced.instanceMatrix.setUsage(THREE.StaticDrawUsage);
+    const instanced = new THREE.InstancedMesh(chevronGeo, lineMat, totalSegments);
+    instanced.instanceMatrix.setUsage(THREE.StaticDrawUsage);
+    instanced.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(totalSegments * 3), 3);
+    instanced.instanceColor.setUsage(THREE.DynamicDrawUsage);
+    instanced.renderOrder = 3;
 
+    this.drivingLineSegments = [];
     const dummy = new THREE.Object3D();
-    let dashIdx = 0;
 
-    for (let i = 0; i < totalSamples; i += 2) {
-      const u1 = i / totalSamples;
-      const u2 = (i + 0.8) / totalSamples;
+    for (let i = 0; i < totalSegments; i++) {
+      const u = i / totalSegments;
+      const pt = this.trackSpline.getPointAt(u);
+      const tan = this.trackSpline.getTangentAt(u).normalize();
+      const driveDir = (direction === 'reverse' ? tan.clone().negate() : tan.clone()).normalize();
 
-      const p1 = this.trackSpline.getPointAt(u1);
-      const p2 = this.trackSpline.getPointAt(u2);
-      const tan = this.trackSpline.getTangentAt(u1).normalize();
+      // Precompute local track curvature over an apex window
+      const nextU = (u + (direction === 'reverse' ? -0.012 : 0.012) + 1.0) % 1.0;
+      const nextTan = this.trackSpline.getTangentAt(nextU).normalize();
+      const nextDriveDir = (direction === 'reverse' ? nextTan.clone().negate() : nextTan.clone()).normalize();
+      const angle = tan.angleTo(nextTan);
+      const segDist = pt.distanceTo(this.trackSpline.getPointAt(nextU));
+      const curvature = segDist > 0.001 ? angle / segDist : 0.05;
 
-      const midX = (p1.x + p2.x) * 0.5;
-      const midZ = (p1.z + p2.z) * 0.5;
-      const ground = this.probeGround(midX, midZ, p1.y, colliders);
+      // Realistic cornering speed guide in km/h: straights ~220 km/h, chicane ~85 km/h, hairpin ~58 km/h
+      const safeSpeedKmH = Math.min(220, Math.max(52, Math.sqrt(28 / Math.max(curvature, 0.022)) * 3.6 * 2.1));
 
-      const length = p1.distanceTo(p2) * 0.85;
+      // Calculate turn direction using 3D cross product of forward drive vectors
+      // In Three.js coordinates (X=right, Y=up, Z=backward):
+      // driveDir x nextDriveDir has cross.y < -0.003 when turning RIGHT, cross.y > 0.003 when turning LEFT
+      const cross = new THREE.Vector3().crossVectors(driveDir, nextDriveDir);
+      const turnDirection: 'left' | 'right' | 'straight' =
+        cross.y < -0.003 ? 'right' : (cross.y > 0.003 ? 'left' : 'straight');
 
-      dummy.position.set(midX, ground.y + 0.014, midZ);
-      dummy.rotation.order = 'XYZ';
-      dummy.rotation.set(-Math.PI / 2, 0, Math.atan2(tan.x, tan.z));
-      dummy.scale.set(1, length, 1);
+      let turnName = 'STRAIGHT';
+      if (safeSpeedKmH < 75) {
+        turnName = turnDirection === 'right' ? 'HAIRPIN RIGHT' : 'HAIRPIN LEFT';
+      } else if (safeSpeedKmH < 105) {
+        turnName = turnDirection === 'right' ? 'HARD RIGHT' : 'HARD LEFT';
+      } else if (safeSpeedKmH < 135) {
+        turnName = turnDirection === 'right' ? 'MEDIUM RIGHT' : 'MEDIUM LEFT';
+      } else if (safeSpeedKmH < 170) {
+        turnName = turnDirection === 'right' ? 'SWEEPER RIGHT' : 'SWEEPER LEFT';
+      }
+
+      // Probe exact asphalt surface elevation
+      const roadHit = this.probeRoadPoint(pt.x, pt.z, pt.y, roadMeshes);
+      const y = roadHit.hit ? roadHit.y + 0.026 : pt.y + 0.026;
+
+      const pos = new THREE.Vector3(pt.x, y, pt.z);
+      dummy.position.copy(pos);
+      // lookAt opposite drive direction so chevron arrow points along forward driveDir
+      dummy.lookAt(pt.x - driveDir.x, y, pt.z - driveDir.z);
       dummy.updateMatrix();
 
-      if (dashIdx < dashCount) {
-        dashesInstanced.setMatrixAt(dashIdx++, dummy.matrix);
+      instanced.setMatrixAt(i, dummy.matrix);
+
+      // Initial color based on static track layout curvature
+      let initialColor = this.colorCyan;
+      if (safeSpeedKmH < 85) {
+        initialColor = this.colorRed;
+      } else if (safeSpeedKmH < 130) {
+        initialColor = this.colorYellow;
       }
+      instanced.setColorAt(i, initialColor);
+
+      this.drivingLineSegments.push({
+        pos,
+        driveDir,
+        u,
+        safeSpeedKmH,
+        turnDirection,
+        turnName,
+        baseColor: initialColor,
+      });
     }
 
-    dashesInstanced.instanceMatrix.needsUpdate = true;
-    roadMarkings.add(dashesInstanced);
-    this.group.add(roadMarkings);
+    instanced.instanceMatrix.needsUpdate = true;
+    if (instanced.instanceColor) instanced.instanceColor.needsUpdate = true;
+
+    lineGroup.add(instanced);
+    this.drivingLineMesh = instanced;
+    this.group.add(lineGroup);
   }
 
   // -------------------------------------------------------------
-  // 5. Trackside Brake Distance Boards & Glowing Turn Chevrons
+  // 4. Trackside Glowing Turn Chevrons (Curve Indicators & Apex Hints)
+  // Luminous LED chevron signs mounted along outer barricades facing approaching cars
   // -------------------------------------------------------------
-  // 6. Authentic NASCAR Cup Series Trackside Advertisements
+  private createTurnChevronTexture(dir: 'left' | 'right'): THREE.CanvasTexture {
+    if (dir === 'left' && this.turnChevronTextureLeft) return this.turnChevronTextureLeft;
+    if (dir === 'right' && this.turnChevronTextureRight) return this.turnChevronTextureRight;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = 512;
+    canvas.height = 256;
+    const ctx = canvas.getContext('2d')!;
+
+    // Dark carbon background
+    ctx.fillStyle = '#0a0d13';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // Diagonal carbon pattern lines
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.04)';
+    ctx.lineWidth = 2;
+    for (let x = -256; x < canvas.width + 256; x += 12) {
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x + 256, 256);
+      ctx.stroke();
+    }
+
+    // Outer high-visibility fluorescent border
+    ctx.strokeStyle = '#ffcc00';
+    ctx.lineWidth = 10;
+    ctx.strokeRect(6, 6, canvas.width - 12, canvas.height - 12);
+
+    // Glowing corner brackets
+    ctx.fillStyle = '#ffcc00';
+    ctx.fillRect(0, 0, 36, 14);
+    ctx.fillRect(0, 0, 14, 36);
+    ctx.fillRect(canvas.width - 36, 0, 36, 14);
+    ctx.fillRect(canvas.width - 14, 0, 14, 36);
+    ctx.fillRect(0, canvas.height - 14, 36, 14);
+    ctx.fillRect(0, canvas.height - 36, 14, 36);
+    ctx.fillRect(canvas.width - 36, canvas.height - 14, 36, 14);
+    ctx.fillRect(canvas.width - 14, canvas.height - 36, 14, 36);
+
+    // Draw bold directional chevrons [ ❯ ❯ ❯ ] or [ ❮ ❮ ❮ ]
+    const drawChevronArrow = (cx: number) => {
+      ctx.save();
+      ctx.shadowColor = '#ffb700';
+      ctx.shadowBlur = 18;
+      ctx.fillStyle = '#ffea00';
+      ctx.beginPath();
+
+      const sign = dir === 'right' ? 1 : -1;
+      const w = 48 * sign;
+      const t = 24 * sign;
+
+      ctx.moveTo(cx - w, 38);
+      ctx.lineTo(cx + w * 0.5, 128);
+      ctx.lineTo(cx - w, 218);
+      ctx.lineTo(cx - w + t, 218);
+      ctx.lineTo(cx + w * 0.5 + t, 128);
+      ctx.lineTo(cx - w + t, 38);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    };
+
+    const centers = dir === 'right' ? [130, 256, 382] : [382, 256, 130];
+    centers.forEach((cx) => drawChevronArrow(cx));
+
+    const tex = new THREE.CanvasTexture(canvas);
+    if (dir === 'left') this.turnChevronTextureLeft = tex;
+    else this.turnChevronTextureRight = tex;
+    return tex;
+  }
+
+  private buildTracksideTurnChevrons(
+    colliders: THREE.Object3D[],
+    direction: 'normal' | 'reverse' = 'reverse'
+  ) {
+    const group = new THREE.Group();
+    group.name = 'TracksideTurnChevrons';
+    const roadMeshes = this.getRoadMeshes(colliders);
+
+    const clusters: Array<{
+      u: number;
+      turnDir: 'left' | 'right';
+      sideSign: number; // +1 outer left in reverse / track right in normal, -1 outer right in reverse / track left in normal
+      count: number;
+      spacingMeters: number;
+    }> = direction === 'reverse' ? [
+      { u: 0.880, turnDir: 'right', sideSign: 1, count: 3, spacingMeters: 3.2 },
+      { u: 0.730, turnDir: 'right', sideSign: 1, count: 4, spacingMeters: 3.2 },
+      { u: 0.630, turnDir: 'left', sideSign: -1, count: 3, spacingMeters: 3.0 },
+      { u: 0.580, turnDir: 'right', sideSign: 1, count: 4, spacingMeters: 3.0 },
+      { u: 0.485, turnDir: 'left', sideSign: -1, count: 3, spacingMeters: 3.0 },
+      { u: 0.405, turnDir: 'right', sideSign: 1, count: 3, spacingMeters: 3.2 },
+      { u: 0.290, turnDir: 'right', sideSign: 1, count: 3, spacingMeters: 3.4 },
+      { u: 0.138, turnDir: 'left', sideSign: -1, count: 3, spacingMeters: 3.2 },
+    ] : [
+      { u: 0.155, turnDir: 'left', sideSign: -1, count: 3, spacingMeters: 3.2 },
+      { u: 0.285, turnDir: 'left', sideSign: 1, count: 3, spacingMeters: 3.4 },
+      { u: 0.400, turnDir: 'left', sideSign: 1, count: 3, spacingMeters: 3.2 },
+      { u: 0.470, turnDir: 'right', sideSign: -1, count: 3, spacingMeters: 3.0 },
+      { u: 0.575, turnDir: 'left', sideSign: 1, count: 4, spacingMeters: 3.0 },
+      { u: 0.635, turnDir: 'right', sideSign: -1, count: 3, spacingMeters: 3.0 },
+      { u: 0.720, turnDir: 'left', sideSign: 1, count: 4, spacingMeters: 3.2 },
+      { u: 0.870, turnDir: 'left', sideSign: 1, count: 4, spacingMeters: 3.2 },
+    ];
+
+    const boardGeo = new THREE.BoxGeometry(2.2, 1.1, 0.06);
+    const postGeo = new THREE.CylinderGeometry(0.045, 0.045, 1.8, 8);
+    const postMat = new THREE.MeshStandardMaterial({
+      color: 0x222222,
+      roughness: 0.5,
+      metalness: 0.7,
+    });
+
+    // Spline samples for high-accuracy circuit clearance checks
+    const splineSamples: THREE.Vector3[] = [];
+    const sampleCount = 360;
+    for (let s = 0; s < sampleCount; s++) {
+      splineSamples.push(this.trackSpline.getPointAt(s / sampleCount));
+    }
+
+    clusters.forEach((cl) => {
+      const tex = this.createTurnChevronTexture(cl.turnDir);
+      const signMat = new THREE.MeshStandardMaterial({
+        map: tex,
+        emissiveMap: tex,
+        emissive: new THREE.Color(0xffb700),
+        emissiveIntensity: 1.25,
+        roughness: 0.25,
+        metalness: 0.15,
+      });
+      this.turnChevronMaterials.push(signMat);
+
+      const baseClusterTan = this.trackSpline.getTangentAt(cl.u).normalize();
+      const baseClusterNormRight = new THREE.Vector3(-baseClusterTan.z, 0, baseClusterTan.x).normalize();
+
+      for (let k = 0; k < cl.count; k++) {
+        // Offset along spline
+        const deltaU = (k * (cl.spacingMeters / this.splineLength)) * (direction === 'reverse' ? -1 : 1);
+        const u = (cl.u + deltaU + 1.0) % 1.0;
+
+        const pt = this.trackSpline.getPointAt(u);
+        const tan = this.trackSpline.getTangentAt(u).normalize();
+        const driveDir = (direction === 'reverse' ? tan.clone().negate() : tan.clone()).normalize();
+        const normRight = new THREE.Vector3(-tan.z, 0, tan.x).normalize();
+
+        // Discard any sign that flips direction across an apex or tight curve
+        if (normRight.dot(baseClusterNormRight) < 0.65) {
+          continue;
+        }
+
+        const baseY = this.getTrueRoadHeight(pt.x, pt.z, roadMeshes, pt.y);
+        const edge = this.findRoadEdge(pt, normRight, cl.sideSign, baseY, roadMeshes);
+        // Base lateral offset firmly on the grass/shoulder outside the asphalt and curbs
+        let lateralDist = Math.max(edge.dist + 1.85, 5.2);
+
+        let finalPosX = pt.x + normRight.x * lateralDist * cl.sideSign;
+        let finalPosZ = pt.z + normRight.z * lateralDist * cl.sideSign;
+        let finalFaceDir = new THREE.Vector3();
+        let boardBaseY = baseY;
+
+        let isValidPlacement = false;
+
+        // Iterative multi-point verification: pushes the sign board and posts outward
+        // until all support posts, corners, and center are completely clear of the road surface
+        for (let iter = 0; iter < 12; iter++) {
+          finalPosX = pt.x + normRight.x * lateralDist * cl.sideSign;
+          finalPosZ = pt.z + normRight.z * lateralDist * cl.sideSign;
+          const ground = this.probeGround(finalPosX, finalPosZ, pt.y, colliders);
+          boardBaseY = Math.max(ground.y, edge.y) + 0.15;
+
+          // Face towards oncoming car with subtle inward slant
+          const toRoad = new THREE.Vector3(pt.x - finalPosX, 0, pt.z - finalPosZ).normalize();
+          finalFaceDir = toRoad.clone().multiplyScalar(0.92).addScaledVector(driveDir, -0.38).normalize();
+
+          // 5 multi-point verification test points (Center, Left Post, Right Post, Left Board Edge, Right Board Edge)
+          const testPoints = [
+            new THREE.Vector3(finalPosX, boardBaseY, finalPosZ), // Center
+            new THREE.Vector3(finalPosX - finalFaceDir.z * 0.65, boardBaseY, finalPosZ + finalFaceDir.x * 0.65), // Left post
+            new THREE.Vector3(finalPosX + finalFaceDir.z * 0.65, boardBaseY, finalPosZ - finalFaceDir.x * 0.65), // Right post
+            new THREE.Vector3(finalPosX - finalFaceDir.z * 1.15, boardBaseY, finalPosZ + finalFaceDir.x * 1.15), // Left edge
+            new THREE.Vector3(finalPosX + finalFaceDir.z * 1.15, boardBaseY, finalPosZ - finalFaceDir.x * 1.15), // Right edge
+          ];
+
+          let conflict = false;
+          for (const tp of testPoints) {
+            // 1. Vertical raycast against road meshes (using actual road baseY)
+            const roadHit = this.probeRoadPoint(tp.x, tp.z, baseY, roadMeshes);
+            if (roadHit.hit) {
+              conflict = true;
+              break;
+            }
+            // 2. Track spline clearance check (must be >= 4.40m from any road centerline point)
+            for (let s = 0; s < sampleCount; s++) {
+              const sp = splineSamples[s];
+              if (Math.hypot(tp.x - sp.x, tp.z - sp.z) < 4.40) {
+                conflict = true;
+                break;
+              }
+            }
+            if (conflict) break;
+          }
+
+          if (conflict) {
+            lateralDist += 0.35;
+          } else {
+            isValidPlacement = true;
+            break;
+          }
+        }
+
+        // Guarantees that if no conflict-free placement exists outside the road,
+        // the sign is strictly omitted rather than placed in the middle of the track!
+        if (!isValidPlacement) {
+          continue;
+        }
+
+        const boardMesh = new THREE.Mesh(boardGeo, signMat);
+        boardMesh.position.set(finalPosX, boardBaseY + 0.95, finalPosZ);
+        boardMesh.lookAt(boardMesh.position.clone().add(finalFaceDir));
+        boardMesh.castShadow = true;
+        group.add(boardMesh);
+
+        // Twin support steel posts firmly planted in the terrain verge
+        const leftPost = new THREE.Mesh(postGeo, postMat);
+        leftPost.position.set(finalPosX - finalFaceDir.z * 0.65, boardBaseY + 0.65, finalPosZ + finalFaceDir.x * 0.65);
+        group.add(leftPost);
+
+        const rightPost = new THREE.Mesh(postGeo, postMat);
+        rightPost.position.set(finalPosX + finalFaceDir.z * 0.65, boardBaseY + 0.65, finalPosZ - finalFaceDir.x * 0.65);
+        group.add(rightPost);
+      }
+    });
+
+    this.group.add(group);
+  }
+
+  // Real-time Road Hint queries: computes the upcoming corner name, direction, distance, and safe speed
+  public getUpcomingTurnHint(carPos: THREE.Vector3, carSpeedKmH: number): RoadHintData | null {
+    if (!this.drivingLineSegments || this.drivingLineSegments.length === 0) return null;
+
+    const total = this.drivingLineSegments.length;
+    // O(1) direct reuse of the segment index tracked during update()
+    let closestIdx = this.closestCarSegmentIdx;
+    if (closestIdx < 0 || closestIdx >= total) closestIdx = 0;
+
+    // Look ahead 6 to 85 segments (approx 3.5m to 51m ahead along the active racing path)
+    let mostDemandingSeg: typeof this.drivingLineSegments[0] | null = null;
+    let minSpeed = Infinity;
+    let aheadDistance = 0;
+
+    for (let step = 6; step <= 90; step++) {
+      const idx = (closestIdx + step * (this.trackDirection === 'reverse' ? -1 : 1) + total) % total;
+      const seg = this.drivingLineSegments[idx];
+      if (seg.safeSpeedKmH < minSpeed && seg.turnDirection !== 'straight') {
+        minSpeed = seg.safeSpeedKmH;
+        mostDemandingSeg = seg;
+        aheadDistance = step * 0.596;
+      }
+    }
+
+    if (!mostDemandingSeg || minSpeed > 145) {
+      return null; // Flat out / Straightaway
+    }
+
+    const speedExcess = carSpeedKmH - minSpeed;
+    let severity: 'safe' | 'caution' | 'brake' = 'safe';
+    if (speedExcess > 16) {
+      severity = 'brake';
+    } else if (speedExcess > 4) {
+      severity = 'caution';
+    }
+
+    return {
+      title: mostDemandingSeg.turnName,
+      direction: mostDemandingSeg.turnDirection,
+      distanceMeters: Math.max(5, Math.round(aheadDistance)),
+      safeSpeedKmH: Math.round(minSpeed),
+      severity,
+    };
+  }
+
+  // -------------------------------------------------------------
+  // 5. Authentic NASCAR Cup Series Trackside Advertisements
   // Replaces cluttered freestanding hoardings with realistic, high-impact NASCAR sponsor boards
   // -------------------------------------------------------------
   private buildNascarTracksideAdvertisements(colliders: THREE.Object3D[], direction: 'normal' | 'reverse') {
@@ -978,37 +1060,30 @@ export class ForzaTrackVisuals {
       width?: number;
       height?: number;
     }> = [
-      // 1. Start / Finish straightaway exit (Caldera approach) - Featured Title Sponsor
-      { u: 0.040, sponsor: 'deepak-gusaiwal', preferredSide: 'left', width: 5.2, height: 1.25 },
+      // 1. High Caldera Entrance Bank
       { u: 0.090, sponsor: 'goodyear', preferredSide: 'right', width: 4.8, height: 1.20 },
-
-      // 2. Caldera Rim & High Plateau
       { u: 0.160, sponsor: 'deepak-gusaiwal', preferredSide: 'left', width: 5.2, height: 1.25 },
       { u: 0.210, sponsor: 'monster', preferredSide: 'right', width: 4.8, height: 1.20 },
       { u: 0.260, sponsor: 'deepak-gusaiwal', preferredSide: 'left', width: 5.2, height: 1.25 },
 
-      // 3. Eastern Dyke high-speed traverse (Spectacular water / cliff views)
+      // 2. Eastern Dyke high-speed traverse (Spectacular water / cliff views)
       { u: 0.310, sponsor: 'deepak-gusaiwal', preferredSide: 'left', width: 5.2, height: 1.25 },
       { u: 0.360, sponsor: 'sunoco', preferredSide: 'left', width: 4.8, height: 1.20 },
       { u: 0.410, sponsor: 'deepak-gusaiwal', preferredSide: 'left', width: 5.2, height: 1.25 },
 
-      // 4. Southern Hairpin outer perimeter
+      // 3. Southern Hairpin outer perimeter
       { u: 0.480, sponsor: 'valvoline', preferredSide: 'right', width: 5.0, height: 1.20 },
       { u: 0.530, sponsor: 'deepak-gusaiwal', preferredSide: 'right', width: 5.2, height: 1.25 },
 
-      // 5. Mountain pass outer ridge
+      // 4. Mountain pass outer ridge
       { u: 0.610, sponsor: 'mobil1', preferredSide: 'right', width: 4.8, height: 1.20 },
       { u: 0.690, sponsor: 'deepak-gusaiwal', preferredSide: 'left', width: 5.2, height: 1.25 },
 
-      // 6. Western switchback outer ridge
+      // 5. Western switchback outer ridge
       { u: 0.750, sponsor: 'deepak-gusaiwal', preferredSide: 'left', width: 5.2, height: 1.25 },
       { u: 0.800, sponsor: 'chevy', preferredSide: 'left', width: 4.8, height: 1.20 },
       { u: 0.850, sponsor: 'deepak-gusaiwal', preferredSide: 'left', width: 5.2, height: 1.25 },
       { u: 0.890, sponsor: 'ford', preferredSide: 'left', width: 4.8, height: 1.20 },
-
-      // 7. Final straightaway back to Start line - Grand Spectator Entrance
-      { u: 0.940, sponsor: 'deepak-gusaiwal', preferredSide: 'left', width: 5.2, height: 1.25 },
-      { u: 0.980, sponsor: 'deepak-gusaiwal', preferredSide: 'left', width: 5.2, height: 1.25 },
     ];
 
     const inwardAngle = 0.22; // ~12.5 degrees subtle viewing angle toward oncoming cars
@@ -1167,15 +1242,20 @@ export class ForzaTrackVisuals {
         side: THREE.FrontSide,
       });
       const bannerMesh = new THREE.Mesh(bannerGeo, bannerMat);
-      bannerMesh.position.set(0, boardH * 0.5 + 0.35, 0.015);
+      bannerMesh.position.set(0, boardH * 0.5 + 0.35, 0.018);
       boardGroup.add(bannerMesh);
 
-      // 2. Dark Aerodynamic Backplate (shared material)
-      const backGeo = new THREE.PlaneGeometry(boardW + 0.04, boardH + 0.04);
-      const backMesh = new THREE.Mesh(backGeo, sharedBackMat);
-      backMesh.position.set(0, boardH * 0.5 + 0.35, -0.01);
+      // 2. Back High-Impact Sponsor Billboard Plate (Authentic Double-Sided Circuit Presentation)
+      const backMesh = new THREE.Mesh(bannerGeo, bannerMat);
+      backMesh.position.set(0, boardH * 0.5 + 0.35, -0.018);
       backMesh.rotation.y = Math.PI;
       boardGroup.add(backMesh);
+
+      // 3. Central Enclosure Core Box
+      const coreGeo = new THREE.BoxGeometry(boardW + 0.04, boardH + 0.04, 0.032);
+      const coreMesh = new THREE.Mesh(coreGeo, sharedBackMat);
+      coreMesh.position.set(0, boardH * 0.5 + 0.35, 0);
+      boardGroup.add(coreMesh);
 
       // 3. Brushed Aluminum Frame Retainer Rails (Top & Bottom, shared material)
       const railGeo = new THREE.BoxGeometry(boardW + 0.08, 0.05, 0.06);
@@ -2130,10 +2210,102 @@ export class ForzaTrackVisuals {
   }
 
   // -------------------------------------------------------------
-  // Frame Update: Animated Smoke Plumes & Pulse LEDs
+  // Frame Update: Dynamic Driving Line, Smoke Plumes & Pulse LEDs
   // -------------------------------------------------------------
-  public update(delta: number, camera?: THREE.Camera) {
+  public update(delta: number, camera?: THREE.Camera, carPos?: THREE.Vector3, carSpeedKmH: number = 0) {
     const time = performance.now() * 0.003;
+
+    // 1. Dynamic Forza Horizon Driving Guideline Color, Lookahead Spotlight & Forward Pulse
+    if (this.drivingLineMesh && this.drivingLineSegments.length > 0) {
+      const total = this.drivingLineSegments.length;
+
+      // Find segment closest to car using efficient local window search
+      let closestIdx = this.lastClosestIdx;
+      if (carPos) {
+        let minDistSq = Infinity;
+        const searchHalf = 32;
+        let bestI = closestIdx;
+        for (let offset = -searchHalf; offset <= searchHalf; offset++) {
+          const idx = (closestIdx + offset + total) % total;
+          const seg = this.drivingLineSegments[idx];
+          const dx = seg.pos.x - carPos.x;
+          const dz = seg.pos.z - carPos.z;
+          const dSq = dx * dx + dz * dz;
+          if (dSq < minDistSq) {
+            minDistSq = dSq;
+            bestI = idx;
+          }
+        }
+        // Fallback full scan only if vehicle teleported / reset
+        if (minDistSq > 120) {
+          for (let i = 0; i < total; i++) {
+            const seg = this.drivingLineSegments[i];
+            const dx = seg.pos.x - carPos.x;
+            const dz = seg.pos.z - carPos.z;
+            const dSq = dx * dx + dz * dz;
+            if (dSq < minDistSq) {
+              minDistSq = dSq;
+              bestI = i;
+            }
+          }
+        }
+        closestIdx = bestI;
+        this.lastClosestIdx = closestIdx;
+        this.closestCarSegmentIdx = closestIdx;
+      }
+
+      // Throttle GPU buffer update to ~25 Hz (40ms) to eliminate GPU bus transfer bottlenecks
+      const nowMs = performance.now();
+      if (nowMs - this.lastGuidelineUpdateTime >= 40) {
+        this.lastGuidelineUpdateTime = nowMs;
+        const pulseTime = nowMs * 0.005;
+
+        // Efficiently update only the active lookahead spotlight range (0 to 80 segments = ~48m ahead)
+        const lookaheadSteps = 80;
+        for (let step = 0; step <= lookaheadSteps; step++) {
+          const i = (closestIdx + step * (this.trackDirection === 'reverse' ? -1 : 1) + total) % total;
+          const seg = this.drivingLineSegments[i];
+          const trackDist = step * 0.596;
+          const speedExcess = carSpeedKmH - seg.safeSpeedKmH;
+
+          // Dynamic speed & braking warning
+          let targetColor = seg.baseColor;
+          if (speedExcess > 16) {
+            targetColor = this.colorRed; // Urgent braking zone!
+          } else if (speedExcess > 4) {
+            targetColor = this.colorYellow; // Moderate deceleration / trail brake
+          } else {
+            targetColor = this.colorCyan; // Safe accelerating line
+          }
+
+          // Forward guiding spotlight & pulse
+          const proximity = 1.0 - Math.min(1.0, trackDist / 48.0);
+          const forwardPulse = Math.sin(pulseTime * 6.5 - trackDist * 0.38) * 0.20 + 0.80;
+          const intensity = (1.15 + proximity * 0.40) * forwardPulse;
+
+          this.tempColor.copy(targetColor).multiplyScalar(intensity);
+          this.drivingLineMesh.setColorAt(i, this.tempColor);
+        }
+
+        // Restore trailing segments behind the car back to clean baseColor
+        for (let b = 1; b <= 10; b++) {
+          const behindIdx = (closestIdx - b * (this.trackDirection === 'reverse' ? -1 : 1) + total) % total;
+          this.drivingLineMesh.setColorAt(behindIdx, this.drivingLineSegments[behindIdx].baseColor);
+        }
+
+        if (this.drivingLineMesh.instanceColor) {
+          this.drivingLineMesh.instanceColor.needsUpdate = true;
+        }
+      }
+    }
+
+    // Pulse trackside LED turn chevron signs
+    if (this.turnChevronMaterials.length > 0) {
+      const chevronPulse = 1.15 + Math.sin(time * 3.5) * 0.35;
+      for (const mat of this.turnChevronMaterials) {
+        mat.emissiveIntensity = chevronPulse;
+      }
+    }
 
     // Billow rising colored festival smoke from flare canisters
     for (const p of this.flareParticles) {
@@ -2169,6 +2341,14 @@ export class ForzaTrackVisuals {
 
   public dispose() {
     this.clearDynamicVisuals();
+    if (this.turnChevronTextureLeft) {
+      this.turnChevronTextureLeft.dispose();
+      this.turnChevronTextureLeft = null;
+    }
+    if (this.turnChevronTextureRight) {
+      this.turnChevronTextureRight.dispose();
+      this.turnChevronTextureRight = null;
+    }
     this.scene.remove(this.group);
   }
 }

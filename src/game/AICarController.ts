@@ -57,6 +57,9 @@ export class AICarController {
   private rotMatrix = new THREE.Matrix4();
   private targetQuat = new THREE.Quaternion();
   private grounded = true;
+  private verticalVelocity = 0;
+  private lastTargetY = 0;
+  private airTime = 0;
   private suspensionRestLength = 0.026 * 0.14;
 
   // AI Behaviors
@@ -440,22 +443,93 @@ export class AICarController {
     const rayHeadroom = Math.max(0.35, 0.8 * this.carScale);
     this.rayOrigin.set(this.position.x, this.position.y + rayHeadroom, this.position.z);
     this.raycaster.set(this.rayOrigin, this.rayDir);
-    this.raycaster.far = Math.max(1.8, 3.5 * this.carScale);
+    this.raycaster.far = Math.max(3.2, 5.0 * this.carScale);
+
+    let groundHit: THREE.Intersection | null = null;
+    let groundNormal: THREE.Vector3 | null = null;
 
     if (colliders.length > 0) {
       const hits = this.raycaster.intersectObjects(colliders, true);
       for (const h of hits) {
         if (h.face) {
           const norm = h.face.normal.clone().transformDirection(h.object.matrixWorld).normalize();
-          if (norm.y >= 0.45) {
-            const targetY = h.point.y + this.suspensionRestLength;
-            this.position.y += (targetY - this.position.y) * Math.min(1, dt * 25);
-            this.surfaceNormal.lerp(norm, Math.min(1, dt * 12));
-            this.grounded = true;
+          if (norm.y >= 0.40) {
+            groundHit = h;
+            groundNormal = norm;
             break;
           }
         }
       }
+    }
+
+    if (groundHit && groundNormal) {
+      const targetY = groundHit.point.y + this.suspensionRestLength;
+      const heightDiff = targetY - this.position.y;
+
+      // Incline slope momentum tracking
+      this.forwardVec.set(-Math.sin(this.currentHeading), 0, -Math.cos(this.currentHeading)).normalize();
+      const slopeAngle = - (this.forwardVec.x * groundNormal.x + this.forwardVec.z * groundNormal.z) / Math.max(0.18, groundNormal.y);
+      const slopeLaunchVy = slopeAngle > 0.04 ? speedMs * slopeAngle : 0;
+      const elevationVy = dt > 0.001 ? Math.max(0, (targetY - this.lastTargetY) / dt) : 0;
+      this.lastTargetY = targetY;
+
+      if (this.grounded) {
+        if (slopeLaunchVy > 0.15 || elevationVy > 0.15) {
+          this.verticalVelocity = Math.max(this.verticalVelocity, slopeLaunchVy, elevationVy);
+        }
+      }
+
+      // Detachment over bump/crest
+      const isDropping = heightDiff < -0.045;
+      const hasJumpSpeed = Math.abs(this.speedKmH) > 30 || this.verticalVelocity > 0.25;
+      const inContact = (!isDropping || !hasJumpSpeed) && heightDiff >= -0.35 && heightDiff <= 0.45 && this.airTime <= 0;
+
+      if (inContact) {
+        this.grounded = true;
+        this.verticalVelocity = 0;
+        if (heightDiff > 0) {
+          this.position.y += THREE.MathUtils.clamp(heightDiff * Math.min(1, dt * 18.0), 0, 8.0 * dt);
+        } else {
+          this.position.y += THREE.MathUtils.clamp(heightDiff * Math.min(1, dt * 14.0), -4.0 * dt, 0);
+        }
+        this.surfaceNormal.lerp(groundNormal, Math.min(1, dt * 12));
+      } else {
+        // Airborne jump over bump or ramp
+        if (this.grounded) {
+          this.grounded = false;
+          this.airTime = 0.08;
+          const minLaunchKick = THREE.MathUtils.clamp((Math.abs(this.speedKmH) / 140) * 3.0, 1.2, 4.5);
+          this.verticalVelocity = Math.max(this.verticalVelocity, minLaunchKick);
+        }
+
+        this.airTime -= dt;
+        const gravity = 20.0;
+        this.verticalVelocity = Math.max(-14, this.verticalVelocity - gravity * dt);
+        this.position.y += this.verticalVelocity * dt;
+
+        // Touchdown
+        if (this.verticalVelocity < 0 && this.airTime <= 0 && this.position.y <= targetY) {
+          const impact = Math.abs(this.verticalVelocity);
+          this.position.y = targetY;
+          this.verticalVelocity = 0;
+          this.grounded = true;
+          this.surfaceNormal.lerp(groundNormal, Math.min(1, dt * 14.0));
+          if (impact > 1.8) {
+            this.particleManager.spawnTireSparks(this.position, Math.min(10, Math.floor(impact * 2)));
+          }
+        } else {
+          // Mid-air flight pitch
+          const airPitch = THREE.MathUtils.clamp((this.verticalVelocity / Math.max(1.0, speedMs)) * 0.35, -0.22, 0.30);
+          const airNormal = new THREE.Vector3(0, 1, 0).addScaledVector(this.forwardVec, -airPitch).normalize();
+          this.surfaceNormal.lerp(airNormal, Math.min(1, dt * 5.0));
+        }
+      }
+    } else {
+      this.grounded = false;
+      this.airTime -= dt;
+      const gravity = 20.0;
+      this.verticalVelocity = Math.max(-14, this.verticalVelocity - gravity * dt);
+      this.position.y += this.verticalVelocity * dt;
     }
 
     this.mesh.position.copy(this.position);

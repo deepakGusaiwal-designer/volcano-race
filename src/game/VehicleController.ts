@@ -89,6 +89,8 @@ export class VehicleController {
   public driftAngle = 0;
   private grounded = true;
   private verticalVelocity = 0;
+  private lastTargetY = 0;
+  private airTime = 0;
   private suspensionRestLength = 0.026 * 0.14; // Bottom of Mazda tires rests cleanly at ~1.5mm above asphalt
 
   // Input state
@@ -661,7 +663,7 @@ export class VehicleController {
     const rayHeadroom = Math.max(0.35, 0.8 * this.carScale);
     this.rayOrigin.set(this.position.x, this.position.y + rayHeadroom, this.position.z);
     this.raycaster.set(this.rayOrigin, this.rayDir);
-    this.raycaster.far = Math.max(1.8, 3.5 * this.carScale);
+    this.raycaster.far = Math.max(3.2, 5.0 * this.carScale);
 
     let hit: THREE.Intersection | null = null;
     let hitNormal: THREE.Vector3 | null = null;
@@ -742,12 +744,32 @@ export class VehicleController {
       }
     }
 
+    const currentSpeedMs = (Math.abs(this.speedKmH) * 1000 / 3600) * this.carScale;
+
     if (hit && hitNormal) {
       const targetY = hit.point.y + this.suspensionRestLength;
       const heightDiff = targetY - this.position.y;
 
-      // Contact window: suspension tracks ground drops and step-ups smoothly within 0.85m reach
-      const inContact = heightDiff >= -0.85 && heightDiff <= 0.45;
+      // Track slope gradient along car's forward motion
+      const slopeAngle = - (this.forwardVec.x * hitNormal.x + this.forwardVec.z * hitNormal.z) / Math.max(0.18, hitNormal.y);
+      const slopeLaunchVy = slopeAngle > 0.04 ? currentSpeedMs * slopeAngle : 0;
+      const elevationVy = dt > 0.001 ? Math.max(0, (targetY - this.lastTargetY) / dt) : 0;
+      this.lastTargetY = targetY;
+
+      // Accumulate upward launch velocity while on an incline
+      if (this.grounded) {
+        if (slopeLaunchVy > 0.15 || elevationVy > 0.15) {
+          this.verticalVelocity = Math.max(this.verticalVelocity, slopeLaunchVy, elevationVy);
+        }
+      }
+
+      // Contact window:
+      // When road rises (heightDiff > 0), car climbs smoothly.
+      // When road drops (heightDiff < -0.045):
+      // If car has forward speed (> 32 km/h) or upward momentum, it DETACHES and launches over the crest!
+      const isDropping = heightDiff < -0.045;
+      const hasJumpSpeed = Math.abs(this.speedKmH) > 32 || this.verticalVelocity > 0.25;
+      const inContact = (!isDropping || !hasJumpSpeed) && heightDiff >= -0.35 && heightDiff <= 0.45 && this.airTime <= 0;
 
       if (inContact) {
         this.grounded = true;
@@ -755,18 +777,18 @@ export class VehicleController {
 
         if (heightDiff > 0) {
           // Stepping up: smoothly glide up over curbs or inclines
-          const stepUp = THREE.MathUtils.clamp(heightDiff * Math.min(1, dt * 14.0), 0, 5.0 * dt);
+          const stepUp = THREE.MathUtils.clamp(heightDiff * Math.min(1, dt * 18.0), 0, 8.0 * dt);
           this.position.y += stepUp;
         } else {
-          // Stepping down / drop: smoothly track downward slope without bouncing, jitter, or oscillation
-          const stepDown = THREE.MathUtils.clamp(heightDiff * Math.min(1, dt * 16.0), -6.0 * dt, 0);
+          // Stepping down / drop at low speed: smoothly track downward slope without bouncing
+          const stepDown = THREE.MathUtils.clamp(heightDiff * Math.min(1, dt * 14.0), -4.0 * dt, 0);
           this.position.y += stepDown;
         }
 
         // Keep vehicle upright: surface normal never tilts into inversion
         hitNormal.y = Math.max(0.60, hitNormal.y);
         hitNormal.normalize();
-        this.surfaceNormal.lerp(hitNormal, Math.min(1, dt * 9.0));
+        this.surfaceNormal.lerp(hitNormal, Math.min(1, dt * 10.0));
 
         // 1. Only save safe track position when firmly on the flat asphalt deck (never on steep embankments)
         const hitName = (hit.object.name || '').toLowerCase();
@@ -780,43 +802,72 @@ export class VehicleController {
           !hitName.includes('magma') &&
           !hitName.includes('trap') &&
           this.position.y >= -0.05 &&
-          this.position.y <= 0.25;
+          this.position.y <= 0.35;
 
         if (isOnCleanRoad && Math.abs(this.speedKmH) > 10) {
           this.lastSafePosition.copy(this.position);
           this.lastSafeHeading = this.currentHeading;
         }
       } else {
-        // True airborne free fall: flew off crest or launched
-        this.grounded = false;
-        this.verticalVelocity = Math.max(-15, this.verticalVelocity - 20 * dt);
+        // True airborne jump flight over bump, crest, or ramp!
+        if (this.grounded) {
+          // Launch moment!
+          this.grounded = false;
+          this.airTime = 0.08;
+          // Minimum launch impulse over bump based on forward speed
+          const minLaunchKick = THREE.MathUtils.clamp((Math.abs(this.speedKmH) / 140) * 3.2, 1.4, 4.8);
+          this.verticalVelocity = Math.max(this.verticalVelocity, minLaunchKick);
+        }
+
+        this.airTime -= dt;
+        const gravity = 20.0;
+        this.verticalVelocity = Math.max(-14, this.verticalVelocity - gravity * dt);
         this.position.y += this.verticalVelocity * dt;
 
         // Smooth landing catch when descending into contact reach
-        if (this.verticalVelocity < 0 && this.position.y <= targetY) {
+        if (this.verticalVelocity < 0 && this.airTime <= 0 && this.position.y <= targetY) {
+          const landingImpact = Math.abs(this.verticalVelocity);
           this.position.y = targetY;
           this.verticalVelocity = 0;
           this.grounded = true;
-        }
+          this.surfaceNormal.lerp(hitNormal, Math.min(1, dt * 14.0));
 
-        this.surfaceNormal.lerp(new THREE.Vector3(0, 1, 0), Math.min(1, dt * 4.0));
+          if (landingImpact > 1.8) {
+            this.particleManager.spawnTireSparks(this.position, Math.min(14, Math.floor(landingImpact * 3)));
+            this.particleManager.spawnTireSmoke(this.position, 0.6);
+            soundEffects.playCollision(Math.min(0.7, landingImpact / 6.0));
+          }
+        } else {
+          // Dynamic air flight pitch: tilts nose up as it ascends, arcs, tips nose down as it descends
+          const speedClamped = Math.max(1.0, currentSpeedMs);
+          const airPitch = THREE.MathUtils.clamp((this.verticalVelocity / speedClamped) * 0.35, -0.22, 0.30);
+          const airNormal = new THREE.Vector3(0, 1, 0).addScaledVector(this.forwardVec, -airPitch).normalize();
+          this.surfaceNormal.lerp(airNormal, Math.min(1, dt * 5.0));
+        }
       }
     } else {
+      // Airborne free fall (over chasm / abyss)
       this.grounded = false;
-      this.verticalVelocity = Math.max(-15, this.verticalVelocity - 20 * dt);
+      this.airTime -= dt;
+      const gravity = 20.0;
+      this.verticalVelocity = Math.max(-14, this.verticalVelocity - gravity * dt);
       this.position.y += this.verticalVelocity * dt;
-      this.surfaceNormal.lerp(new THREE.Vector3(0, 1, 0), Math.min(1, dt * 4.0));
+
+      const speedClamped = Math.max(1.0, currentSpeedMs);
+      const airPitch = THREE.MathUtils.clamp((this.verticalVelocity / speedClamped) * 0.35, -0.22, 0.30);
+      const airNormal = new THREE.Vector3(0, 1, 0).addScaledVector(this.forwardVec, -airPitch).normalize();
+      this.surfaceNormal.lerp(airNormal, Math.min(1, dt * 4.0));
     }
 
     // 2. Off-track Abyss, Lava Trap & Sky Launch Boundary Recovery:
-    // Recovers vehicle if it drops into the deep caldera lake (y < -0.85m), is launched into the sky (y > 2.8m), or is stopped on a lava hazard:
+    // Recovers vehicle if it drops into the deep caldera lake (y < -0.85m), is launched into the sky (y > 5.5m), or is stopped on a lava hazard:
     const isFallenInAbyss = this.position.y < -0.85;
-    const isLaunchedInSky = this.position.y > 2.8;
+    const isLaunchedInSky = this.position.y > 5.5;
     const isLavaStuck = (groundIsLava || this.isOnLava) && Math.abs(this.speedKmH) < 5;
 
     if (this.respawnCooldown <= 0 && (isFallenInAbyss || isLaunchedInSky || isLavaStuck)) {
       this.deepLavaTimer += dt;
-      const timeout = (isFallenInAbyss || isLaunchedInSky) ? 0.35 : 0.75;
+      const timeout = (isFallenInAbyss || isLaunchedInSky) ? 0.45 : 0.75;
       if (this.deepLavaTimer >= timeout) {
         this.respawn();
         this.deepLavaTimer = 0;
@@ -826,7 +877,7 @@ export class VehicleController {
     }
 
     // Absolute boundary failsafes
-    if (this.position.y < -1.5 || this.position.y > 4.5) {
+    if (this.position.y < -1.5 || this.position.y > 8.0) {
       this.respawn();
     }
 
