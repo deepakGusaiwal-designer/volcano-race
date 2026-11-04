@@ -7,9 +7,6 @@ interface TrailPoint {
   x: number;
   y: number;
   z: number;
-  upX: number;
-  upY: number;
-  upZ: number;
   age: number;
   maxAge: number;
   width: number;
@@ -24,7 +21,7 @@ interface TrailStream {
   maxPoints: number;
   lastPos: THREE.Vector3;
   hasLastPos: boolean;
-  sideSign: number; // -1 for left taillight, +1 for right taillight
+  sideSign: number; // -1 for left nozzle, +1 for right nozzle
 }
 
 interface CarTrailRig {
@@ -35,7 +32,8 @@ interface CarTrailRig {
 
 /**
  * LightTrailManager
- * Renders small, sleek, minimal Asphalt-style neon taillight ribbons behind moving vehicles.
+ * Renders small, sleek, minimal Asphalt-style nitro supersonic jet streams directly from twin exhaust nozzles.
+ * Uses camera-facing billboarding so ribbons appear like volumetric glowing energy beams rather than flat walls.
  * High-performance: Pre-allocated single draw-call BufferGeometry with zero per-frame heap allocations.
  */
 export class LightTrailManager {
@@ -57,10 +55,14 @@ export class LightTrailManager {
 
   // Scratch vectors to prevent runtime allocations
   private tempPos = new THREE.Vector3();
-  private tempUp = new THREE.Vector3();
   private tempFwd = new THREE.Vector3();
   private tempRight = new THREE.Vector3();
+  private tempUp = new THREE.Vector3();
+  private tempSegment = new THREE.Vector3();
+  private tempToCam = new THREE.Vector3();
+  private tempSide = new THREE.Vector3();
   private tempColor = new THREE.Color();
+  private defaultCamPos = new THREE.Vector3(0, 5, 0);
 
   constructor(scene: THREE.Scene) {
     this.scene = scene;
@@ -80,9 +82,9 @@ export class LightTrailManager {
       this.positions[i * 3 + 1] = -1000;
       this.positions[i * 3 + 2] = 0;
 
-      this.colors[i * 4 + 0] = 1.0;
-      this.colors[i * 4 + 1] = 0.1;
-      this.colors[i * 4 + 2] = 0.2;
+      this.colors[i * 4 + 0] = 0.0;
+      this.colors[i * 4 + 1] = 0.95;
+      this.colors[i * 4 + 2] = 1.0;
       this.colors[i * 4 + 3] = 0.0;
     }
 
@@ -97,10 +99,10 @@ export class LightTrailManager {
       this.indices[idx + 4] = v + 2;
       this.indices[idx + 5] = v + 3;
 
-      this.uvs[v * 2 + 0] = 0.0; this.uvs[v * 2 + 1] = 0.0;
-      this.uvs[v * 2 + 2] = 1.0; this.uvs[v * 2 + 3] = 0.0;
-      this.uvs[v * 2 + 4] = 1.0; this.uvs[v * 2 + 5] = 1.0;
-      this.uvs[v * 2 + 6] = 0.0; this.uvs[v * 2 + 7] = 1.0;
+      this.uvs[v * 2 + 0] = 0.0; this.uvs[v * 2 + 1] = 1.0;
+      this.uvs[v * 2 + 2] = 0.0; this.uvs[v * 2 + 3] = 0.0;
+      this.uvs[v * 2 + 4] = 1.0; this.uvs[v * 2 + 5] = 0.0;
+      this.uvs[v * 2 + 6] = 1.0; this.uvs[v * 2 + 7] = 1.0;
     }
 
     this.geometry = new THREE.BufferGeometry();
@@ -154,21 +156,38 @@ export class LightTrailManager {
     };
   }
 
+  /**
+   * Supersonic laser core texture:
+   * Across Y (lateral): Intense white-hot core centered in the middle falling off smoothly.
+   * Across X (longitudinal): Root at exhaust is bright ignition burst, tapering smoothly to 0 at tip.
+   */
   private createTrailTexture(): THREE.CanvasTexture {
     const canvas = document.createElement('canvas');
-    canvas.width = 128;
-    canvas.height = 32;
+    canvas.width = 256;
+    canvas.height = 64;
     const ctx = canvas.getContext('2d');
     if (ctx) {
-      // Sleek vertical falloff: glowing white core with smooth neon aura
-      const grad = ctx.createLinearGradient(0, 0, 0, canvas.height);
-      grad.addColorStop(0.0, 'rgba(255, 255, 255, 0.0)');
-      grad.addColorStop(0.20, 'rgba(255, 255, 255, 0.25)');
-      grad.addColorStop(0.50, 'rgba(255, 255, 255, 1.0)');
-      grad.addColorStop(0.80, 'rgba(255, 255, 255, 0.25)');
-      grad.addColorStop(1.0, 'rgba(255, 255, 255, 0.0)');
+      // 1. Sleek laser core across Y: brilliant supersonic center core falling off to soft neon aura
+      const gradY = ctx.createLinearGradient(0, 0, 0, canvas.height);
+      gradY.addColorStop(0.0, 'rgba(255, 255, 255, 0.0)');
+      gradY.addColorStop(0.32, 'rgba(255, 255, 255, 0.25)');
+      gradY.addColorStop(0.46, 'rgba(255, 255, 255, 0.90)');
+      gradY.addColorStop(0.50, 'rgba(255, 255, 255, 1.00)');
+      gradY.addColorStop(0.54, 'rgba(255, 255, 255, 0.90)');
+      gradY.addColorStop(0.68, 'rgba(255, 255, 255, 0.25)');
+      gradY.addColorStop(1.0, 'rgba(255, 255, 255, 0.0)');
 
-      ctx.fillStyle = grad;
+      ctx.fillStyle = gradY;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      // 2. Length-wise fade across X: nozzle root is intense ignition burst, tail tip fades to 0
+      ctx.globalCompositeOperation = 'destination-in';
+      const gradX = ctx.createLinearGradient(0, 0, canvas.width, 0);
+      gradX.addColorStop(0.0, 'rgba(255, 255, 255, 1.0)');
+      gradX.addColorStop(0.40, 'rgba(255, 255, 255, 0.95)');
+      gradX.addColorStop(0.80, 'rgba(255, 255, 255, 0.40)');
+      gradX.addColorStop(1.0, 'rgba(255, 255, 255, 0.0)');
+      ctx.fillStyle = gradX;
       ctx.fillRect(0, 0, canvas.width, canvas.height);
     }
 
@@ -184,7 +203,12 @@ export class LightTrailManager {
   /**
    * Main per-frame update: advances ages, samples vehicle taillights, and fills buffer geometry
    */
-  public update(delta: number, playerVehicle: VehicleController, aiCars: AICarController[] = []) {
+  public update(
+    delta: number,
+    playerVehicle: VehicleController,
+    aiCars: AICarController[] = [],
+    camera?: THREE.Camera
+  ) {
     const dt = Math.min(delta, 0.05);
 
     // 1. Update Player Vehicle Trails
@@ -202,14 +226,14 @@ export class LightTrailManager {
       }
     }
 
-    // 3. Rebuild and stream ribbon quads into GPU buffers
+    // 3. Rebuild and stream ribbon quads into GPU buffers using camera-facing billboarding
     let quadIndex = 0;
-    quadIndex = this.writeStreamQuads(this.playerRig.leftStream, quadIndex);
-    quadIndex = this.writeStreamQuads(this.playerRig.rightStream, quadIndex);
+    quadIndex = this.writeStreamQuads(this.playerRig.leftStream, quadIndex, camera);
+    quadIndex = this.writeStreamQuads(this.playerRig.rightStream, quadIndex, camera);
 
     for (let i = 0; i < this.aiRigs.length; i++) {
-      quadIndex = this.writeStreamQuads(this.aiRigs[i].leftStream, quadIndex);
-      quadIndex = this.writeStreamQuads(this.aiRigs[i].rightStream, quadIndex);
+      quadIndex = this.writeStreamQuads(this.aiRigs[i].leftStream, quadIndex, camera);
+      quadIndex = this.writeStreamQuads(this.aiRigs[i].rightStream, quadIndex, camera);
     }
 
     // Hide any unused quads below ground
@@ -225,6 +249,7 @@ export class LightTrailManager {
 
     this.geometry.attributes.position.needsUpdate = true;
     this.geometry.attributes.color.needsUpdate = true;
+    this.geometry.attributes.uv.needsUpdate = true;
   }
 
   private updateCarTrail(rig: CarTrailRig, vehicle: VehicleController, dt: number) {
@@ -232,36 +257,44 @@ export class LightTrailManager {
     this.ageStream(rig.rightStream, dt);
 
     const speed = Math.abs(vehicle.speedKmH);
-    const minSpeedThreshold = 26; // km/h
 
-    if (speed < minSpeedThreshold) {
+    // Clean aesthetic: Only emit trails when Nitro is active, when drifting, or faint wisp at extreme speed.
+    // Cruising at normal speeds leaves the car clean without distracting curtains.
+    const isNitro = vehicle.isBoosting;
+    const isDrift = vehicle.isDrifting && speed > 32;
+    const isHighSpeedSprint = speed > 70 && vehicle.input.forward;
+
+    if (!isNitro && !isDrift && !isHighSpeedSprint) {
       rig.leftStream.hasLastPos = false;
       rig.rightStream.hasLastPos = false;
       return;
     }
 
-    // Determine trail color based on car preset & driving dynamic
+    // Determine trail color and profile based on driving state
     const preset = CAR_PRESETS[vehicle.carModelId] || CAR_PRESETS.mazda;
-    let baseHex = 0xff1e27; // Mazda hypercar red
-    let baseAlpha = 0.72;
-    let width = 0.082; // Sleek, slender minimal ribbon
-    let maxLifetime = 0.28; // Snappy Asphalt-style fade
+    let baseHex = 0x00f0ff; // Brilliant electric cyan nitro default
+    let baseAlpha = 0.95;
+    let width = 0.034;      // Small, compact nozzle diameter (~3.4cm)
+    let maxLifetime = 0.12; // Snappy supersonic jet length (~1.2m at speed)
 
-    if (vehicle.isBoosting) {
-      // Electric Neon Cyan Nitro Trail (Asphalt nitro burst)
+    if (isNitro) {
+      // Supersonic Electric Cyan Nitro Thrust Jet
       baseHex = 0x00f0ff;
       baseAlpha = 0.95;
-      width = 0.118;
-      maxLifetime = 0.38;
-    } else if (vehicle.isDrifting) {
-      // Glowing Neon Drift Flare
+      width = 0.034;
+      maxLifetime = 0.13;
+    } else if (isDrift) {
+      // Glowing Neon Drift Plasma Trace
       baseHex = 0xff1493;
-      baseAlpha = 0.88;
-      width = 0.105;
-      maxLifetime = 0.34;
-    } else if (preset.accentColor) {
-      this.tempColor.set(preset.accentColor);
-      baseHex = this.tempColor.getHex();
+      baseAlpha = 0.80;
+      width = 0.026;
+      maxLifetime = 0.11;
+    } else if (isHighSpeedSprint) {
+      // Very faint, razor-thin aerodynamic exhaust heat wisp
+      baseHex = preset.accentColor ? this.tempColor.set(preset.accentColor).getHex() : 0x67e8f9;
+      baseAlpha = 0.20;
+      width = 0.018;
+      maxLifetime = 0.065;
     }
 
     this.tempColor.setHex(baseHex);
@@ -275,20 +308,21 @@ export class LightTrailManager {
     this.tempUp.set(0, 1, 0).applyQuaternion(vehicle.mesh.quaternion);
 
     const carScale = vehicle.carScale;
-    const rearDist = 2.06 * carScale;
-    const tailY = 0.18 * (carScale / 0.20);
-    const tailOffset = 0.42 * carScale;
+    // Precisely anchored to the real twin exhaust nozzles of the car chassis
+    const rearDist = 2.12 * carScale;
+    const exhaustY = 0.105 * (carScale / 0.20);
+    const pipeOffset = 0.155 * carScale;
 
-    // Base rear center
+    // Base rear exhaust center
     const rearCenter = vehicle.position.clone().addScaledVector(this.tempFwd, -rearDist);
-    rearCenter.addScaledVector(this.tempUp, tailY);
+    rearCenter.addScaledVector(this.tempUp, exhaustY);
 
-    // Left and Right Taillight emission origins
-    const leftPos = rearCenter.clone().addScaledVector(this.tempRight, -tailOffset);
-    const rightPos = rearCenter.clone().addScaledVector(this.tempRight, tailOffset);
+    // Left and Right Exhaust Nozzle emission points
+    const leftPos = rearCenter.clone().addScaledVector(this.tempRight, -pipeOffset);
+    const rightPos = rearCenter.clone().addScaledVector(this.tempRight, pipeOffset);
 
-    this.sampleStream(rig.leftStream, leftPos, this.tempUp, dt, r, g, b, baseAlpha, width, maxLifetime);
-    this.sampleStream(rig.rightStream, rightPos, this.tempUp, dt, r, g, b, baseAlpha, width, maxLifetime);
+    this.sampleStream(rig.leftStream, leftPos, dt, r, g, b, baseAlpha, width, maxLifetime);
+    this.sampleStream(rig.rightStream, rightPos, dt, r, g, b, baseAlpha, width, maxLifetime);
   }
 
   private updateAICarTrail(rig: CarTrailRig, aiCar: AICarController, dt: number) {
@@ -296,22 +330,25 @@ export class LightTrailManager {
     this.ageStream(rig.rightStream, dt);
 
     const speed = Math.abs(aiCar.speedKmH);
-    if (speed < 30) {
+    const isNitro = aiCar.isBoosting;
+    const isHighSpeed = speed > 72;
+
+    if (!isNitro && !isHighSpeed) {
       rig.leftStream.hasLastPos = false;
       rig.rightStream.hasLastPos = false;
       return;
     }
 
-    let baseHex = aiCar.config.colorHex || 0x2563eb;
-    let baseAlpha = 0.65;
-    let width = 0.078;
-    let maxLifetime = 0.25;
+    let baseHex = 0x00e5ff;
+    let baseAlpha = 0.90;
+    let width = 0.032;
+    let maxLifetime = 0.12;
 
-    if (aiCar.isBoosting) {
-      baseHex = 0x00e5ff;
-      baseAlpha = 0.90;
-      width = 0.110;
-      maxLifetime = 0.34;
+    if (!isNitro && isHighSpeed) {
+      baseHex = aiCar.config.colorHex || 0x38bdf8;
+      baseAlpha = 0.18;
+      width = 0.016;
+      maxLifetime = 0.06;
     }
 
     this.tempColor.setHex(baseHex);
@@ -324,25 +361,24 @@ export class LightTrailManager {
     this.tempUp.set(0, 1, 0).applyQuaternion(aiCar.mesh.quaternion);
 
     const carScale = aiCar.carScale;
-    const rearDist = 2.05 * carScale;
-    const tailY = 0.16 * (carScale / 0.20);
-    const tailOffset = 0.40 * carScale;
+    const rearDist = 2.15 * carScale;
+    const exhaustY = 0.105 * (carScale / 0.20);
+    const pipeOffset = 0.150 * carScale;
 
     const rearCenter = aiCar.position.clone().addScaledVector(this.tempFwd, -rearDist);
-    rearCenter.addScaledVector(this.tempUp, tailY);
+    rearCenter.addScaledVector(this.tempUp, exhaustY);
 
-    const leftPos = rearCenter.clone().addScaledVector(this.tempRight, -tailOffset);
-    const rightPos = rearCenter.clone().addScaledVector(this.tempRight, tailOffset);
+    const leftPos = rearCenter.clone().addScaledVector(this.tempRight, -pipeOffset);
+    const rightPos = rearCenter.clone().addScaledVector(this.tempRight, pipeOffset);
 
-    this.sampleStream(rig.leftStream, leftPos, this.tempUp, dt, r, g, b, baseAlpha, width, maxLifetime);
-    this.sampleStream(rig.rightStream, rightPos, this.tempUp, dt, r, g, b, baseAlpha, width, maxLifetime);
+    this.sampleStream(rig.leftStream, leftPos, dt, r, g, b, baseAlpha, width, maxLifetime);
+    this.sampleStream(rig.rightStream, rightPos, dt, r, g, b, baseAlpha, width, maxLifetime);
   }
 
   private sampleStream(
     stream: TrailStream,
     curPos: THREE.Vector3,
-    upVec: THREE.Vector3,
-    dt: number,
+    _dt: number,
     r: number,
     g: number,
     b: number,
@@ -357,15 +393,12 @@ export class LightTrailManager {
     }
 
     const dist = stream.lastPos.distanceTo(curPos);
-    // Add point when car moves at least ~0.09m
-    if (dist >= 0.085) {
+    // Dense 5.5cm sampling gives silky-smooth high-frequency curved streams
+    if (dist >= 0.055) {
       stream.points.unshift({
         x: curPos.x,
         y: curPos.y,
         z: curPos.z,
-        upX: upVec.x,
-        upY: upVec.y,
-        upZ: upVec.z,
         age: 0,
         maxAge: maxLifetime,
         width,
@@ -399,14 +432,20 @@ export class LightTrailManager {
   }
 
   /**
-   * Writes continuous ribbon quads connecting successive trail sample points
+   * Writes continuous ribbon quads connecting successive trail sample points.
+   * Employs camera-facing billboarding so streams maintain volumetric laser appearance from all angles.
    */
-  private writeStreamQuads(stream: TrailStream, startQuadIndex: number): number {
+  private writeStreamQuads(
+    stream: TrailStream,
+    startQuadIndex: number,
+    camera?: THREE.Camera
+  ): number {
     let qIdx = startQuadIndex;
     const count = stream.points.length;
     if (count < 2) return qIdx;
 
     const maxQuads = this.totalStreams * this.maxSegmentsPerStream;
+    const camPos = camera ? camera.position : this.defaultCamPos;
 
     for (let i = 0; i < count - 1; i++) {
       if (qIdx >= maxQuads) break;
@@ -414,53 +453,91 @@ export class LightTrailManager {
       const p0 = stream.points[i];
       const p1 = stream.points[i + 1];
 
-      // Smooth life falloff ratio
-      const ratio0 = 1.0 - Math.min(1.0, p0.age / p0.maxAge);
-      const ratio1 = 1.0 - Math.min(1.0, p1.age / p1.maxAge);
+      // Normalized progress from nozzle (0.0) to tail tip (1.0)
+      const u0 = Math.min(1.0, p0.age / p0.maxAge);
+      const u1 = Math.min(1.0, p1.age / p1.maxAge);
 
-      const a0 = Math.pow(ratio0, 1.35) * p0.alpha;
-      const a1 = Math.pow(ratio1, 1.35) * p1.alpha;
+      const ratio0 = 1.0 - u0;
+      const ratio1 = 1.0 - u1;
 
-      const h0 = p0.width * 0.5 * (0.45 + ratio0 * 0.55);
-      const h1 = p1.width * 0.5 * (0.45 + ratio1 * 0.55);
+      // Smooth cubic life falloff
+      const a0 = Math.pow(ratio0, 1.6) * p0.alpha;
+      const a1 = Math.pow(ratio1, 1.6) * p1.alpha;
+
+      // Supersonic taper: starts at nozzle width, tapers down to needle point
+      const w0 = p0.width * (0.12 + ratio0 * 0.88);
+      const w1 = p1.width * (0.12 + ratio1 * 0.88);
+
+      const h0 = w0 * 0.5;
+      const h1 = w1 * 0.5;
+
+      // Midpoint between p0 and p1
+      const midX = (p0.x + p1.x) * 0.5;
+      const midY = (p0.y + p1.y) * 0.5;
+      const midZ = (p0.z + p1.z) * 0.5;
+
+      // Segment vector
+      this.tempSegment.set(p0.x - p1.x, p0.y - p1.y, p0.z - p1.z);
+      const segLenSq = this.tempSegment.lengthSq();
+      if (segLenSq < 1e-6) continue;
+      this.tempSegment.divideScalar(Math.sqrt(segLenSq));
+
+      // Vector towards camera
+      this.tempToCam.set(camPos.x - midX, camPos.y - midY, camPos.z - midZ).normalize();
+
+      // Lateral vector perpendicular to segment & view direction
+      this.tempSide.crossVectors(this.tempSegment, this.tempToCam);
+      if (this.tempSide.lengthSq() < 1e-4) {
+        this.tempSide.set(0, 1, 0);
+      } else {
+        this.tempSide.normalize();
+      }
 
       const v = qIdx * 4;
 
       // Vertex 0: p0 Top
-      this.positions[(v + 0) * 3 + 0] = p0.x + p0.upX * h0;
-      this.positions[(v + 0) * 3 + 1] = p0.y + p0.upY * h0;
-      this.positions[(v + 0) * 3 + 2] = p0.z + p0.upZ * h0;
+      this.positions[(v + 0) * 3 + 0] = p0.x + this.tempSide.x * h0;
+      this.positions[(v + 0) * 3 + 1] = p0.y + this.tempSide.y * h0;
+      this.positions[(v + 0) * 3 + 2] = p0.z + this.tempSide.z * h0;
       this.colors[(v + 0) * 4 + 0] = p0.r;
       this.colors[(v + 0) * 4 + 1] = p0.g;
       this.colors[(v + 0) * 4 + 2] = p0.b;
       this.colors[(v + 0) * 4 + 3] = a0;
+      this.uvs[(v + 0) * 2 + 0] = u0;
+      this.uvs[(v + 0) * 2 + 1] = 1.0;
 
       // Vertex 1: p0 Bottom
-      this.positions[(v + 1) * 3 + 0] = p0.x - p0.upX * h0;
-      this.positions[(v + 1) * 3 + 1] = p0.y - p0.upY * h0;
-      this.positions[(v + 1) * 3 + 2] = p0.z - p0.upZ * h0;
+      this.positions[(v + 1) * 3 + 0] = p0.x - this.tempSide.x * h0;
+      this.positions[(v + 1) * 3 + 1] = p0.y - this.tempSide.y * h0;
+      this.positions[(v + 1) * 3 + 2] = p0.z - this.tempSide.z * h0;
       this.colors[(v + 1) * 4 + 0] = p0.r;
       this.colors[(v + 1) * 4 + 1] = p0.g;
       this.colors[(v + 1) * 4 + 2] = p0.b;
       this.colors[(v + 1) * 4 + 3] = a0;
+      this.uvs[(v + 1) * 2 + 0] = u0;
+      this.uvs[(v + 1) * 2 + 1] = 0.0;
 
       // Vertex 2: p1 Bottom
-      this.positions[(v + 2) * 3 + 0] = p1.x - p1.upX * h1;
-      this.positions[(v + 2) * 3 + 1] = p1.y - p1.upY * h1;
-      this.positions[(v + 2) * 3 + 2] = p1.z - p1.upZ * h1;
+      this.positions[(v + 2) * 3 + 0] = p1.x - this.tempSide.x * h1;
+      this.positions[(v + 2) * 3 + 1] = p1.y - this.tempSide.y * h1;
+      this.positions[(v + 2) * 3 + 2] = p1.z - this.tempSide.z * h1;
       this.colors[(v + 2) * 4 + 0] = p1.r;
       this.colors[(v + 2) * 4 + 1] = p1.g;
       this.colors[(v + 2) * 4 + 2] = p1.b;
       this.colors[(v + 2) * 4 + 3] = a1;
+      this.uvs[(v + 2) * 2 + 0] = u1;
+      this.uvs[(v + 2) * 2 + 1] = 0.0;
 
       // Vertex 3: p1 Top
-      this.positions[(v + 3) * 3 + 0] = p1.x + p1.upX * h1;
-      this.positions[(v + 3) * 3 + 1] = p1.y + p1.upY * h1;
-      this.positions[(v + 3) * 3 + 2] = p1.z + p1.upZ * h1;
+      this.positions[(v + 3) * 3 + 0] = p1.x + this.tempSide.x * h1;
+      this.positions[(v + 3) * 3 + 1] = p1.y + this.tempSide.y * h1;
+      this.positions[(v + 3) * 3 + 2] = p1.z + this.tempSide.z * h1;
       this.colors[(v + 3) * 4 + 0] = p1.r;
       this.colors[(v + 3) * 4 + 1] = p1.g;
       this.colors[(v + 3) * 4 + 2] = p1.b;
       this.colors[(v + 3) * 4 + 3] = a1;
+      this.uvs[(v + 3) * 2 + 0] = u1;
+      this.uvs[(v + 3) * 2 + 1] = 1.0;
 
       qIdx++;
     }

@@ -291,6 +291,149 @@ class SoundEffectsManager {
     }
   }
 
+  playCountdown(step: 3 | 2 | 1 | 0) {
+    if (!this.isInitialized || !this.ctx || !this.masterGain || !this.enabled) return;
+    const now = this.ctx.currentTime;
+
+    if (step > 0) {
+      // 3, 2, 1: Electro warning beep
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = 'square';
+      osc.frequency.setValueAtTime(880, now); // A5
+
+      gain.gain.setValueAtTime(0.22, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
+
+      osc.connect(gain);
+      gain.connect(this.masterGain);
+      osc.start(now);
+      osc.stop(now + 0.14);
+    } else {
+      // 0 (GO!): High-energy dual frequency launch chime
+      [1760, 2637].forEach((freq) => {
+        const osc = this.ctx!.createOscillator();
+        const gain = this.ctx!.createGain();
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(freq, now);
+
+        gain.gain.setValueAtTime(0.28, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.45);
+
+        osc.connect(gain);
+        gain.connect(this.masterGain!);
+        osc.start(now);
+        osc.stop(now + 0.48);
+      });
+    }
+  }
+
+  playStuntScore() {
+    if (!this.isInitialized || !this.ctx || !this.masterGain || !this.enabled) return;
+    const now = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(1480, now);
+    osc.frequency.exponentialRampToValueAtTime(1920, now + 0.08);
+
+    gain.gain.setValueAtTime(0.12, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.10);
+
+    osc.connect(gain);
+    gain.connect(this.masterGain);
+    osc.start(now);
+    osc.stop(now + 0.11);
+  }
+
+  playComboBank() {
+    if (!this.isInitialized || !this.ctx || !this.masterGain || !this.enabled) return;
+    const now = this.ctx.currentTime;
+    [1046.5, 1318.5, 1567.98, 2093].forEach((freq, idx) => {
+      const osc = this.ctx!.createOscillator();
+      const gain = this.ctx!.createGain();
+      const t = now + idx * 0.04;
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(freq, t);
+
+      gain.gain.setValueAtTime(0.2, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.25);
+
+      osc.connect(gain);
+      gain.connect(this.masterGain!);
+      osc.start(t);
+      osc.stop(t + 0.28);
+    });
+  }
+
+  playRevEngine() {
+    if (!this.isInitialized || !this.ctx || !this.masterGain || !this.enabled) return;
+    const now = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    const filter = this.ctx.createBiquadFilter();
+
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(80, now);
+    osc.frequency.exponentialRampToValueAtTime(320, now + 0.35);
+    osc.frequency.exponentialRampToValueAtTime(120, now + 0.7);
+
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(400, now);
+    filter.frequency.exponentialRampToValueAtTime(1600, now + 0.35);
+    filter.frequency.exponentialRampToValueAtTime(500, now + 0.7);
+
+    gain.gain.setValueAtTime(0.25, now);
+    gain.gain.exponentialRampToValueAtTime(0.01, now + 0.75);
+
+    osc.connect(filter);
+    filter.connect(gain);
+    gain.connect(this.masterGain);
+    osc.start(now);
+    osc.stop(now + 0.8);
+  }
+
+  playLevelUp() {
+    if (!this.isInitialized || !this.ctx || !this.masterGain || !this.enabled) return;
+    const now = this.ctx.currentTime;
+    const freqs = [523.25, 659.25, 783.99, 1046.5, 1318.51, 1567.98];
+    freqs.forEach((freq, idx) => {
+      const osc = this.ctx!.createOscillator();
+      const gain = this.ctx!.createGain();
+      const t = now + idx * 0.06;
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(freq, t);
+
+      gain.gain.setValueAtTime(0.22, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.4);
+
+      osc.connect(gain);
+      gain.connect(this.masterGain!);
+      osc.start(t);
+      osc.stop(t + 0.45);
+    });
+  }
+
+  playClick() {
+    if (!this.isInitialized || !this.ctx || !this.masterGain || !this.enabled) return;
+    const now = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(1200, now);
+    osc.frequency.exponentialRampToValueAtTime(600, now + 0.04);
+
+    gain.gain.setValueAtTime(0.12, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.05);
+
+    osc.connect(gain);
+    gain.connect(this.masterGain);
+    osc.start(now);
+    osc.stop(now + 0.06);
+  }
+
   playVictory() {
     if (!this.isInitialized || !this.ctx || !this.masterGain || !this.enabled) return;
     const now = this.ctx.currentTime;

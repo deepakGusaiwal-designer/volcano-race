@@ -197,6 +197,35 @@ export class ParticleManager {
     this.spawnTireSmoke(pos, 0.85);
   }
 
+  spawnHotWheelsCollectBurst(pos: THREE.Vector3) {
+    const sparkCount = 30;
+    for (let i = 0; i < sparkCount; i++) {
+      if (this.dynamicParticles.length >= this.maxDynamic) break;
+      const angle = (i / sparkCount) * Math.PI * 2 + (Math.random() - 0.5) * 0.3;
+      const speed = 3.2 + Math.random() * 3.2;
+      const vel = new THREE.Vector3(
+        Math.cos(angle) * speed,
+        1.5 + Math.random() * 2.8,
+        Math.sin(angle) * speed
+      );
+
+      // Fiery Hot Wheels colors: blazing red, bright orange, radiant gold
+      const r = Math.random();
+      const col = r < 0.4 ? new THREE.Color(1.0, 0.15, 0.0) : (r < 0.75 ? new THREE.Color(1.0, 0.55, 0.05) : new THREE.Color(1.0, 0.95, 0.3));
+      this.dynamicParticles.push({
+        position: pos.clone().add(new THREE.Vector3((Math.random() - 0.5) * 0.15, 0.25, (Math.random() - 0.5) * 0.15)),
+        velocity: vel,
+        color: col,
+        size: 0.20 + Math.random() * 0.12,
+        life: 0,
+        maxLife: 0.45 + Math.random() * 0.25,
+      });
+    }
+
+    // High energy expanding flame puff
+    this.spawnTireSmoke(pos, 0.95);
+  }
+
   spawnBoostFlame(exhaustPos: THREE.Vector3, carForward: THREE.Vector3) {
     if (this.dynamicParticles.length >= this.maxDynamic) return;
     const reverseDir = carForward.clone().negate();

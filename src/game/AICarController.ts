@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { ParticleManager } from './ParticleManager';
+import { useGameStore } from '../store/useGameStore';
 
 export interface AICarConfig {
   id: string;
@@ -286,6 +287,16 @@ export class AICarController {
   ) {
     const dt = Math.min(delta, 0.05);
 
+    // Keep AI cars parked on their starting grid slots during welcome screen and countdown
+    const gState = useGameStore.getState().gameState;
+    if (gState === 'welcome' || gState === 'countdown') {
+      this.speedKmH = 0;
+      this.velocity.set(0, 0, 0);
+      this.mesh.position.copy(this.position);
+      this.mesh.quaternion.copy(this.quaternion);
+      return;
+    }
+
     // 1. Advance Spline Position U
     let bestU = this.progressU;
     let minDist = Infinity;
@@ -438,6 +449,20 @@ export class AICarController {
 
     this.position.x += this.velocity.x * dt;
     this.position.z += this.velocity.z * dt;
+
+    // Strict boundary enforcement: AI cars can NEVER enter or drive on the blocked lava road
+    if (
+      this.position.x >= 17.0 &&
+      this.position.x <= 21.5 &&
+      this.position.z >= 15.5 &&
+      this.position.z <= 22.0
+    ) {
+      const safePt = this.trackSpline.getPointAt(this.progressU);
+      this.position.x = safePt.x;
+      this.position.z = safePt.z;
+      this.velocity.multiplyScalar(0.4);
+      this.speedKmH = Math.min(this.speedKmH, 70);
+    }
 
     // 6. Ground Raycasting & Suspension
     const rayHeadroom = Math.max(0.35, 0.8 * this.carScale);

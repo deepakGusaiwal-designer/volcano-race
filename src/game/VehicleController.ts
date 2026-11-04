@@ -91,6 +91,9 @@ export class VehicleController {
   private verticalVelocity = 0;
   private lastTargetY = 0;
   private airTime = 0;
+  private currentAirDuration = 0;
+  private currentDriftDuration = 0;
+  private lastBoostState = false;
   private suspensionRestLength = 0.026 * 0.14; // Bottom of Mazda tires rests cleanly at ~1.5mm above asphalt
 
   // Input state
@@ -476,6 +479,23 @@ export class VehicleController {
       this.respawnCooldown -= dt;
     }
 
+    const gState = useGameStore.getState().gameState;
+    if (gState === 'welcome' || gState === 'countdown') {
+      this.speedKmH = 0;
+      this.yawVelocity = 0;
+      if (gState === 'countdown') {
+        if (this.input.forward) {
+          this.rpm = Math.min(7800, this.rpm + 5600 * dt);
+        } else {
+          this.rpm = Math.max(1050, this.rpm - 3600 * dt);
+        }
+        soundEffects.updateEngine(this.rpm, 0, false, false);
+      } else {
+        this.rpm = 1050;
+      }
+      return;
+    }
+
     // 1. Steering Input & Physics
     // Smooth, progressive sports-car steering response with speed-sensitive stability
     const speedAbs = Math.abs(this.speedKmH);
@@ -500,6 +520,25 @@ export class VehicleController {
     this.isDrifting = this.input.handbrake && Math.abs(this.speedKmH) > 16;
     this.isBoosting = (this.input.boost && this.nitro > 0 && this.input.forward) || this.isAsphaltSurging;
     this.isBraking = (this.input.backward && this.speedKmH > 3) || this.input.handbrake;
+
+    // Stunt Tracking: Drift Chain
+    if (this.isDrifting && Math.abs(this.speedKmH) > 28) {
+      this.currentDriftDuration += dt;
+    } else if (this.currentDriftDuration > 0.35) {
+      const pts = Math.min(650, Math.round(this.currentDriftDuration * 220));
+      useGameStore.getState().triggerStunt('DRIFT BONUS! 🔥', pts, 'drift');
+      soundEffects.playStuntScore();
+      this.currentDriftDuration = 0;
+    } else {
+      this.currentDriftDuration = 0;
+    }
+
+    // Stunt Tracking: Hyper Boost Surge
+    if (this.isBoosting && !this.lastBoostState) {
+      useGameStore.getState().triggerStunt('HYPER NITRO! ⚡', 100, 'boost');
+      soundEffects.playStuntScore();
+    }
+    this.lastBoostState = this.isBoosting;
 
     if (this.isAsphaltSurging) {
       // Asphalt Hyper-Nitro auto-surge: preserves nitro bar for additional player boosting!
@@ -790,10 +829,17 @@ export class VehicleController {
         hitNormal.normalize();
         this.surfaceNormal.lerp(hitNormal, Math.min(1, dt * 10.0));
 
-        // 1. Only save safe track position when firmly on the flat asphalt deck (never on steep embankments)
+        // 1. Only save safe track position when firmly on the flat asphalt deck (never on steep embankments or closed roads)
         const hitName = (hit.object.name || '').toLowerCase();
+        const isInBlockedLavaRoad =
+          this.position.x >= 17.0 &&
+          this.position.x <= 21.5 &&
+          this.position.z >= 15.5 &&
+          this.position.z <= 22.0;
+
         const isOnCleanRoad =
           !groundIsLava &&
+          !isInBlockedLavaRoad &&
           (hitName.includes('specialroad') || hit.object.userData.isPlatform) &&
           !hitName.includes('dyke') &&
           !hitName.includes('ground') &&
@@ -820,6 +866,7 @@ export class VehicleController {
         }
 
         this.airTime -= dt;
+        this.currentAirDuration += dt;
         const gravity = 20.0;
         this.verticalVelocity = Math.max(-14, this.verticalVelocity - gravity * dt);
         this.position.y += this.verticalVelocity * dt;
@@ -831,6 +878,14 @@ export class VehicleController {
           this.verticalVelocity = 0;
           this.grounded = true;
           this.surfaceNormal.lerp(hitNormal, Math.min(1, dt * 14.0));
+
+          // Trigger Big Air Stunt Bonus
+          if (this.currentAirDuration > 0.22) {
+            const points = Math.min(600, Math.round(this.currentAirDuration * 450));
+            useGameStore.getState().triggerStunt(`BIG AIR! ${this.currentAirDuration.toFixed(1)}s 🚀`, points, 'air');
+            soundEffects.playStuntScore();
+          }
+          this.currentAirDuration = 0;
 
           if (landingImpact > 1.8) {
             this.particleManager.spawnTireSparks(this.position, Math.min(14, Math.floor(landingImpact * 3)));
@@ -849,6 +904,7 @@ export class VehicleController {
       // Airborne free fall (over chasm / abyss)
       this.grounded = false;
       this.airTime -= dt;
+      this.currentAirDuration += dt;
       const gravity = 20.0;
       this.verticalVelocity = Math.max(-14, this.verticalVelocity - gravity * dt);
       this.position.y += this.verticalVelocity * dt;
@@ -860,15 +916,24 @@ export class VehicleController {
     }
 
     // 2. Off-track Abyss, Lava Trap & Sky Launch Boundary Recovery:
-    // Recovers vehicle if it drops into the deep caldera lake (y < -0.85m), is launched into the sky (y > 5.5m), or is stopped on a lava hazard:
+    // Recovers vehicle if it drops into the deep caldera lake (y < -0.85m), is launched into the sky (y > 5.5m), enters the blocked lava road, or is stopped on a lava hazard:
     const isFallenInAbyss = this.position.y < -0.85;
     const isLaunchedInSky = this.position.y > 5.5;
     const isLavaStuck = (groundIsLava || this.isOnLava) && Math.abs(this.speedKmH) < 5;
+    const isInBlockedLavaRoad =
+      this.position.x >= 17.0 &&
+      this.position.x <= 21.5 &&
+      this.position.z >= 15.5 &&
+      this.position.z <= 22.0;
 
-    if (this.respawnCooldown <= 0 && (isFallenInAbyss || isLaunchedInSky || isLavaStuck)) {
+    if (this.respawnCooldown <= 0 && (isFallenInAbyss || isLaunchedInSky || isLavaStuck || isInBlockedLavaRoad)) {
       this.deepLavaTimer += dt;
-      const timeout = (isFallenInAbyss || isLaunchedInSky) ? 0.45 : 0.75;
+      const timeout = isInBlockedLavaRoad ? 0.20 : ((isFallenInAbyss || isLaunchedInSky) ? 0.45 : 0.75);
       if (this.deepLavaTimer >= timeout) {
+        if (isInBlockedLavaRoad) {
+          useGameStore.getState().setNotification('⛔ ROAD CLOSED - ACTIVE LAVA HAZARD! ⛔');
+          soundEffects.playCollision(0.8);
+        }
         this.respawn();
         this.deepLavaTimer = 0;
       }
@@ -879,6 +944,17 @@ export class VehicleController {
     // Absolute boundary failsafes
     if (this.position.y < -1.5 || this.position.y > 8.0) {
       this.respawn();
+    }
+
+    // Proximity warning when approaching blocked lava road wrong way entrance:
+    const distToLowerMouth = Math.hypot(this.position.x - 20.6, this.position.z - 14.1);
+    const distToUpperMouth = Math.hypot(this.position.x - 16.85, this.position.z - 23.5);
+    if (distToLowerMouth < 6.0 || distToUpperMouth < 6.0) {
+      const headingToLower = distToLowerMouth < 6.0 && this.forwardVec.z > 0.35;
+      const headingToUpper = distToUpperMouth < 6.0 && this.forwardVec.z < -0.35;
+      if (headingToLower || headingToUpper) {
+        useGameStore.getState().setNotification('⛔ WRONG WAY! DO NOT ENTER! ⛔');
+      }
     }
 
     // 6. Movement in XZ plane with High-Speed Anti-Tunneling Substeps
@@ -1239,6 +1315,22 @@ export class VehicleController {
       isOnLava: this.isOnLava,
       carScale: this.carScale,
     };
+  }
+
+  public setPaintColor(hex: string) {
+    const col = new THREE.Color(hex);
+    this.mesh.traverse((child) => {
+      if ((child as THREE.Mesh).isMesh) {
+        const mat = (child as THREE.Mesh).material as THREE.MeshStandardMaterial;
+        if (mat) {
+          const name = (mat.name || '').toLowerCase();
+          if (name.includes('carpaint') || name.includes('exterior') || name.includes('body')) {
+            mat.color.copy(col);
+            mat.needsUpdate = true;
+          }
+        }
+      }
+    });
   }
 
   dispose() {

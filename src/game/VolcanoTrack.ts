@@ -9,6 +9,7 @@ export class VolcanoTrack {
   public model: THREE.Group = new THREE.Group();
   public colliders: THREE.Object3D[] = []; // Drivable floor surfaces for suspension raycasting
   public barriers: THREE.Object3D[] = [];  // Track borders, curbs, walls, rocks, and obstacles for collision resistance
+  private hazardBeaconMaterials: THREE.MeshStandardMaterial[] = [];
   public trackDirection: 'normal' | 'reverse' = 'reverse';
   public spawnPosition = new THREE.Vector3(-7.26, 0.05, 10.61);
   public spawnHeading = Math.PI / 2; // Reverse mode: Facing -X down the straightaway
@@ -30,8 +31,8 @@ export class VolcanoTrack {
   // Forward Circuit Checkpoints
   public checkpointsForward: CheckpointDef[] = [
     { index: 0, position: [-7.26, 0.05, 10.61], radius: 8.5, passed: false },  // Start / Finish Line
-    { index: 1, position: [11.42, 0.1, 9.05], radius: 11.0, passed: false },   // Turn 1 (Caldera entry - centered)
-    { index: 2, position: [27.73, 0.1, 20.64], radius: 12.0, passed: false },  // Caldera rim curve (centered)
+    { index: 1, position: [8.80, 0.1, 17.80], radius: 11.0, passed: false },   // Turn 1 (Western Mountain Pass entry)
+    { index: 2, position: [23.50, 0.1, 29.50], radius: 12.0, passed: false },  // Caldera rim peak apex (centered)
     { index: 3, position: [46.89, 0.1, -6.54], radius: 12.0, passed: false },  // Dyke entrance (centered)
     { index: 4, position: [21.64, 0.1, -28.44], radius: 13.0, passed: false }, // Outer hairpin turn (centered)
     { index: 5, position: [-26.13, 0.1, -18.70], radius: 12.0, passed: false }, // Mountain pass (centered)
@@ -45,8 +46,8 @@ export class VolcanoTrack {
     { index: 2, position: [-26.13, 0.1, -18.70], radius: 12.0, passed: false }, // Mountain pass (centered)
     { index: 3, position: [21.64, 0.1, -28.44], radius: 13.0, passed: false }, // Outer hairpin (centered)
     { index: 4, position: [46.89, 0.1, -6.54], radius: 12.0, passed: false },  // Dyke entrance (centered)
-    { index: 5, position: [27.73, 0.1, 20.64], radius: 12.0, passed: false },  // Caldera rim curve (centered)
-    { index: 6, position: [11.42, 0.1, 9.05], radius: 11.0, passed: false },   // Caldera entry / Jump approach (centered)
+    { index: 5, position: [23.50, 0.1, 29.50], radius: 12.0, passed: false },  // Caldera rim peak apex (centered)
+    { index: 6, position: [8.80, 0.1, 17.80], radius: 11.0, passed: false },   // Western Mountain Pass / Straight approach
   ];
 
   public checkpoints: CheckpointDef[] = [];
@@ -146,11 +147,12 @@ export class VolcanoTrack {
               name.includes('detritus') ||        // Debris / rocks on road surface
               name.includes('crack_');            // Pothole / crack decal plates on the road surface
 
-            // Completely remove obsolete low-res static signs, hoardings, and billboards baked into Volcano.glb (turn_sign, checkpoint_01, etc.)
-            // so they don't block the view, clutter the scenery, or confuse the driver
+            // Completely remove obsolete low-res static signs, hoardings, billboards, and old baked coins
+            // so they don't block the view, clutter the scenery, or clash with the 3D spinning Hot Wheels tokens
             const isLegacySign = name.includes('sign') || name.includes('checkpoint');
+            const isLegacyCoin = name.includes('coin');
 
-            if (isRoadObstacleStone || isLegacySign) {
+            if (isRoadObstacleStone || isLegacySign || isLegacyCoin) {
               child.visible = false;
               toRemove.push(child);
               return;
@@ -287,17 +289,17 @@ export class VolcanoTrack {
                     }
                   }
 
-                  // Lava is solid so the vehicle can drive over the lava surface and NEVER fall through the mesh into the void!
+                  // Lava surfaces are in colliders so vehicle contacts the terrain
                   this.colliders.push(mesh);
 
-                  // If this is the sunken lava trap pot on the road deck, bridge it with a smooth invisible deck
-                  // so the vehicle can drive over the lava hazard smoothly without sinking into a 37cm deep hole and getting stuck
+                  // Smooth flush invisible bridge deck across the sunken lava potholes (lava pots / pits)
+                  // Allows cars to drive smoothly over the lava pothole at full speed without sinking into the 37cm hole
                   if (name.includes('sortlava_trap')) {
                     const deckGeo = mesh.geometry.clone();
                     const posAttr = deckGeo.attributes.position;
                     for (let i = 0; i < posAttr.count; i++) {
-                      // Road surface is flush at local Z = -614.43 in Volcano.glb
-                      posAttr.setZ(i, -614.43);
+                      // Road surface is flush at local Z = -614.425 in Volcano.glb
+                      posAttr.setZ(i, -614.425);
                     }
                     deckGeo.computeVertexNormals();
 
@@ -315,7 +317,7 @@ export class VolcanoTrack {
                     deckMesh.visible = true;
                     deckMesh.userData.isPlatform = true;
                     deckMesh.userData.isRoad = true;
-                    deckMesh.userData.isLavaHazard = true;
+                    deckMesh.userData.isLavaHazard = false;
                     if (mesh.parent) {
                       mesh.parent.add(deckMesh);
                     }
@@ -334,7 +336,7 @@ export class VolcanoTrack {
                   matName.includes('colwall') ||
                   matName.includes('9.2') ||
                   name.includes('colwall') ||
-                  (name.includes('specialroad') && name.includes('_2'))
+                  (name.includes('specialroad') && name.includes('_3'))
                 ) {
                   // Invisible collision barrier wall along the racetrack borders (ColWall.dds)
                   // Hidden from driver view, but retained in barriers for raycast collision detection
@@ -473,7 +475,10 @@ export class VolcanoTrack {
             this.barriers.push(...this.forzaVisuals.railBarriers);
           }
 
-          // 4. Setup Checkpoint Gate Visuals
+          // 4. Build Heavy Lava Road Blockades (Barricades, Road Closed Signs & Collision Walls)
+          this.buildLavaRoadBlockades();
+
+          // 5. Setup Checkpoint Gate Visuals
           this.createCheckpointVisuals();
 
           resolve();
@@ -486,6 +491,245 @@ export class VolcanoTrack {
         (err) => reject(err)
       );
     });
+  }
+
+  // -------------------------------------------------------------
+  // Lava Road 5-Tiered "WRONG WAY" Signboards & Active Hazard Closure
+  // Cascades 5 luminous "WRONG WAY" barricades down the lava road
+  // exactly matching the 5 tiers marked by the driver
+  // -------------------------------------------------------------
+  private buildLavaRoadBlockades() {
+    const blockadeGroup = new THREE.Group();
+    blockadeGroup.name = 'LavaRoadBlockades';
+
+    // 1. Procedural High-Contrast Hazard Barrier Base Texture (Diagonal Yellow & Black Stripes)
+    const stripeCanvas = document.createElement('canvas');
+    stripeCanvas.width = 512;
+    stripeCanvas.height = 128;
+    const sCtx = stripeCanvas.getContext('2d')!;
+    sCtx.fillStyle = '#1c1f24';
+    sCtx.fillRect(0, 0, 512, 128);
+
+    const stripeW = 36;
+    for (let x = -128; x < 512 + 128; x += stripeW * 2) {
+      sCtx.fillStyle = '#ffcc00';
+      sCtx.beginPath();
+      sCtx.moveTo(x, 0);
+      sCtx.lineTo(x + stripeW, 0);
+      sCtx.lineTo(x + stripeW - 48, 128);
+      sCtx.lineTo(x - 48, 128);
+      sCtx.closePath();
+      sCtx.fill();
+    }
+    sCtx.strokeStyle = 'rgba(0, 0, 0, 0.5)';
+    sCtx.lineWidth = 4;
+    sCtx.strokeRect(2, 2, 508, 124);
+
+    const barrierTex = new THREE.CanvasTexture(stripeCanvas);
+    barrierTex.wrapS = THREE.RepeatWrapping;
+    barrierTex.wrapT = THREE.ClampToEdgeWrapping;
+    barrierTex.repeat.set(2, 1);
+
+    const barrierMat = new THREE.MeshStandardMaterial({
+      map: barrierTex,
+      metalness: 0.15,
+      roughness: 0.70,
+    });
+
+    const railMat = new THREE.MeshStandardMaterial({
+      color: 0xd8dde4,
+      metalness: 0.92,
+      roughness: 0.20,
+    });
+
+    // 2. Procedural Luminous "WRONG WAY / DO NOT ENTER" Warning Signboard Texture (1024x256)
+    const signCanvas = document.createElement('canvas');
+    signCanvas.width = 1024;
+    signCanvas.height = 256;
+    const signCtx = signCanvas.getContext('2d')!;
+
+    // Carbon / Industrial Hazard Frame
+    signCtx.fillStyle = '#0a0d12';
+    signCtx.fillRect(0, 0, 1024, 256);
+
+    // Thick Red Hazard Border
+    signCtx.strokeStyle = '#ff1a00';
+    signCtx.lineWidth = 14;
+    signCtx.strokeRect(10, 10, 1004, 236);
+
+    // Inner White Accent Border
+    signCtx.strokeStyle = '#ffffff';
+    signCtx.lineWidth = 3;
+    signCtx.strokeRect(20, 20, 984, 216);
+
+    // Top & Bottom Yellow/Black Diagonal Hazard Striping
+    for (let x = -40; x < 1080; x += 32) {
+      signCtx.fillStyle = '#ffcc00';
+      signCtx.beginPath();
+      signCtx.moveTo(x, 22);
+      signCtx.lineTo(x + 16, 22);
+      signCtx.lineTo(x - 2, 44);
+      signCtx.lineTo(x - 18, 44);
+      signCtx.closePath();
+      signCtx.fill();
+
+      signCtx.beginPath();
+      signCtx.moveTo(x, 212);
+      signCtx.lineTo(x + 16, 212);
+      signCtx.lineTo(x - 2, 234);
+      signCtx.lineTo(x - 18, 234);
+      signCtx.closePath();
+      signCtx.fill();
+    }
+
+    // Bold "WRONG WAY" Typography
+    signCtx.textAlign = 'center';
+    signCtx.textBaseline = 'middle';
+
+    signCtx.save();
+    signCtx.shadowColor = '#ff2200';
+    signCtx.shadowBlur = 28;
+    signCtx.font = '900 70px "Impact", "Arial Black", sans-serif';
+    signCtx.fillStyle = '#ffffff';
+    signCtx.fillText('⛔   WRONG WAY   ⛔', 512, 108);
+    signCtx.restore();
+
+    // Directional Warning Chevrons & Subtitle
+    signCtx.font = '900 28px "Arial Black", sans-serif';
+    signCtx.fillStyle = '#ffcc00';
+    signCtx.fillText('❮ ❮ ❮   DO NOT ENTER   ❯ ❯ ❯', 512, 172);
+
+    const signTex = new THREE.CanvasTexture(signCanvas);
+    const signMat = new THREE.MeshStandardMaterial({
+      map: signTex,
+      emissiveMap: signTex,
+      emissive: new THREE.Color(0xff2200),
+      emissiveIntensity: 2.2,
+      metalness: 0.2,
+      roughness: 0.35,
+      side: THREE.DoubleSide,
+    });
+
+    const beaconMat = new THREE.MeshStandardMaterial({
+      color: 0xff4400,
+      emissive: new THREE.Color(0xff2200),
+      emissiveIntensity: 3.2,
+      metalness: 0.8,
+      roughness: 0.2,
+    });
+    this.hazardBeaconMaterials.push(beaconMat);
+
+    // Helper to create a complete realistic "WRONG WAY" barrier unit
+    const createWrongWaySignUnit = (
+      width: number,
+      pos: THREE.Vector3,
+      rotY: number
+    ) => {
+      const unit = new THREE.Group();
+      unit.position.copy(pos);
+      unit.rotation.y = rotY;
+
+      // 1. Concrete Jersey Barrier Base
+      const baseGeo = new THREE.BoxGeometry(width, 0.75, 0.45);
+      const baseMesh = new THREE.Mesh(baseGeo, barrierMat);
+      baseMesh.position.set(0, 0.375, 0);
+      baseMesh.castShadow = false;
+      baseMesh.receiveShadow = true;
+      unit.add(baseMesh);
+
+      // 2. Steel Crash Rails (Top & Middle)
+      const rail1 = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, width, 16), railMat);
+      rail1.rotation.z = Math.PI / 2;
+      rail1.position.set(0, 0.82, 0);
+      unit.add(rail1);
+
+      const rail2 = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, width, 16), railMat);
+      rail2.rotation.z = Math.PI / 2;
+      rail2.position.set(0, 1.05, 0);
+      unit.add(rail2);
+
+      // 3. Stanchion Support Posts
+      const postGeo = new THREE.CylinderGeometry(0.04, 0.04, 0.55, 12);
+      const stepX = width / 4;
+      for (let i = -1.5; i <= 1.5; i += 1.0) {
+        const post = new THREE.Mesh(postGeo, railMat);
+        post.position.set(i * stepX, 0.95, 0);
+        unit.add(post);
+      }
+
+      // 4. Prominent Double-Sided "WRONG WAY" Signboard
+      const signWidth = Math.min(width * 0.86, 3.8);
+      const signGeo = new THREE.BoxGeometry(signWidth, 1.05, 0.08);
+      const signMesh = new THREE.Mesh(signGeo, signMat);
+      signMesh.position.set(0, 1.25, 0);
+      unit.add(signMesh);
+
+      // 5. Pulsing Amber / Red Hazard Beacons
+      const beaconGeo = new THREE.CylinderGeometry(0.065, 0.065, 0.16, 12);
+      const beaconL = new THREE.Mesh(beaconGeo, beaconMat);
+      beaconL.position.set(-signWidth * 0.45, 1.84, 0);
+      unit.add(beaconL);
+
+      const beaconR = new THREE.Mesh(beaconGeo, beaconMat);
+      beaconR.position.set(signWidth * 0.45, 1.84, 0);
+      unit.add(beaconR);
+
+      // 6. Solid Physics Barrier Mesh for VehicleController
+      const colGeo = new THREE.BoxGeometry(width, 3.2, 0.85);
+      const colMat = new THREE.MeshBasicMaterial({ visible: false, depthWrite: false });
+      const colMesh = new THREE.Mesh(colGeo, colMat);
+      colMesh.position.copy(pos);
+      colMesh.position.y += 1.6;
+      colMesh.rotation.y = rotY;
+      colMesh.updateMatrixWorld(true);
+
+      colGeo.computeBoundingBox();
+      colGeo.computeBoundingSphere();
+      if (colGeo.boundingSphere) {
+        const s = colGeo.boundingSphere.clone();
+        s.applyMatrix4(colMesh.matrixWorld);
+        colMesh.userData.worldSphere = s;
+      }
+      this.barriers.push(colMesh);
+      blockadeGroup.add(colMesh);
+
+      blockadeGroup.add(unit);
+    };
+
+    // 5 Tiered "WRONG WAY" Signs spanning across the lava canal:
+    // Tier 1 (Bottom Entrance / Road Junction):
+    createWrongWaySignUnit(5.0, new THREE.Vector3(20.60, -0.38, 14.10), 1.24);
+
+    // Tier 2 (Lower-Middle Ramp):
+    createWrongWaySignUnit(4.7, new THREE.Vector3(19.66, -0.38, 16.45), 1.22);
+
+    // Tier 3 (Center of Ramp):
+    createWrongWaySignUnit(4.5, new THREE.Vector3(18.73, -0.38, 18.80), 1.20);
+
+    // Tier 4 (Upper-Middle Ramp):
+    createWrongWaySignUnit(4.7, new THREE.Vector3(17.79, -0.38, 21.15), 1.17);
+
+    // Tier 5 (Top Entrance / Mountain Junction):
+    createWrongWaySignUnit(5.0, new THREE.Vector3(16.85, -0.38, 23.50), 1.15);
+
+    // Heavy Interior Lava Zone Solid Blocker Volume (Ensures zero penetration across the entire ramp)
+    const lavaColGeo = new THREE.BoxGeometry(4.4, 4.0, 10.2);
+    const lavaColMat = new THREE.MeshBasicMaterial({ visible: false, depthWrite: false });
+    const lavaColMesh = new THREE.Mesh(lavaColGeo, lavaColMat);
+    lavaColMesh.position.set(18.7, 1.6, 18.8);
+    lavaColMesh.rotation.y = 1.14;
+    lavaColMesh.updateMatrixWorld(true);
+    lavaColGeo.computeBoundingBox();
+    lavaColGeo.computeBoundingSphere();
+    if (lavaColGeo.boundingSphere) {
+      const s = lavaColGeo.boundingSphere.clone();
+      s.applyMatrix4(lavaColMesh.matrixWorld);
+      lavaColMesh.userData.worldSphere = s;
+    }
+    this.barriers.push(lavaColMesh);
+    blockadeGroup.add(lavaColMesh);
+
+    this.model.add(blockadeGroup);
   }
 
   private createCheckpointVisuals() {
@@ -545,6 +789,14 @@ export class VolcanoTrack {
     for (const coin of this.coinObjects) {
       if (coin.visible) {
         coin.rotation.y += delta * 2.5;
+      }
+    }
+
+    // 4. Pulse warning beacons on lava road barricades
+    if (this.hazardBeaconMaterials.length > 0) {
+      const beaconPulse = 1.6 + Math.sin(time * 5.0) * 1.2;
+      for (const bMat of this.hazardBeaconMaterials) {
+        bMat.emissiveIntensity = beaconPulse;
       }
     }
 

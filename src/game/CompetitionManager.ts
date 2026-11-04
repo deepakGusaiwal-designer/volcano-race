@@ -5,78 +5,96 @@ import { VehicleController } from './VehicleController';
 import { soundEffects } from '../audio/SoundEffects';
 import { useGameStore } from '../store/useGameStore';
 
-// Exact 54-Waypoint Road Centerline extracted directly from the Volcano track geometry
+// Exact 69-Waypoint Centerline extracted directly from the Volcano track geometry
+// 100% on-road, continuous, non-branching, non-self-intersecting closed loop.
 export const CIRCUIT_WAYPOINTS = [
-  // Segment 0: Start Line straight across jump ramp to CP 1 (Caldera entry)
+  // Segment 0: Start Line straight across jump ramp to Western road entry
   new THREE.Vector3(-7.26, 0.08, 10.61), // 0: Start / Finish Line
   new THREE.Vector3(-3.50, 0.08, 10.20), // 1: Straightaway
-  new THREE.Vector3(0.57, 0.15, 9.60),   // 2: Platform ramp approach (centered)
-  new THREE.Vector3(4.09, 0.18, 11.49),  // 3: Platform jump ramp (centered)
-  new THREE.Vector3(7.50, 0.15, 10.50),  // 4: Jump landing (centered)
-  new THREE.Vector3(11.42, 0.10, 9.05),  // 5: CP 1 (Caldera entry - centered)
+  new THREE.Vector3(0.57, 0.08, 9.80),   // 2: Platform ramp approach (centered)
+  new THREE.Vector3(3.80, 0.15, 10.80),  // 3: Platform takeoff / crest
+  new THREE.Vector3(5.50, 0.08, 12.00),  // 4: Straightaway transition
 
-  // Segment 1: Caldera curve sweeping up to CP 2 (Caldera rim peak)
-  new THREE.Vector3(15.40, 0.08, 11.28), // 6: Caldera bank
-  new THREE.Vector3(19.71, 0.08, 10.88), // 7: Mid-Caldera curve (centered)
-  new THREE.Vector3(26.47, 0.08, 12.02), // 8: Caldera climb (centered)
-  new THREE.Vector3(28.72, 0.08, 17.93), // 9: Rim approach (centered)
-  new THREE.Vector3(27.73, 0.10, 20.64), // 10: CP 2 (Caldera rim peak - centered)
+  // Segment 1: Pure Western Mountain Sweep (NO LAVA SHORTCUT, follows outer road around volcano cone!)
+  new THREE.Vector3(6.50, 0.08, 14.20),  // 5: Western road approach
+  new THREE.Vector3(7.40, 0.08, 16.00),  // 6: Western sweeper entry
+  new THREE.Vector3(8.80, 0.08, 17.80),  // 7: CP 1 (Western Mountain Pass entry)
+  new THREE.Vector3(10.50, 0.08, 19.60), // 8: Western curve
+  new THREE.Vector3(12.60, 0.08, 21.60), // 9: Western climb
+  new THREE.Vector3(14.60, 0.08, 23.80), // 10: Western bank
+  new THREE.Vector3(16.50, 0.08, 25.80), // 11: Rim approach
+  new THREE.Vector3(19.50, 0.08, 27.60), // 12: Rim turn entry
+  new THREE.Vector3(23.50, 0.10, 29.50), // 13: CP 2 (Caldera rim peak apex)
 
-  // Segment 2: Descent down eastern dyke towards CP 3
-  new THREE.Vector3(27.38, 0.08, 15.69), // 11: Rim descent (centered)
-  new THREE.Vector3(31.01, 0.08, 5.44),  // 12: East traverse (centered)
-  new THREE.Vector3(39.53, 0.08, -0.27), // 13: Dyke transition (centered)
-  new THREE.Vector3(43.10, 0.08, -1.44), // 14: Dyke straight (centered)
-  new THREE.Vector3(46.89, 0.10, -6.54), // 15: CP 3 (Dyke entrance - centered)
+  // Segment 2: Pure East Road descent and dyke traverse to CP 3
+  new THREE.Vector3(28.00, 0.08, 26.50), // 14: Rim descent entry
+  new THREE.Vector3(29.20, 0.08, 22.00), // 15: East straight
+  new THREE.Vector3(28.50, 0.08, 17.00), // 16: East descent lane
+  new THREE.Vector3(27.00, 0.08, 14.50), // 17: East lane curve
+  new THREE.Vector3(26.00, 0.08, 13.00), // 18: East sweep
+  new THREE.Vector3(24.00, 0.08, 11.50), // 19: Dyke entry transition
+  new THREE.Vector3(20.50, 0.08, 10.50), // 20: Lower dyke approach
+  new THREE.Vector3(17.50, 0.08, 9.50),  // 21: Lower dyke sweep
+  new THREE.Vector3(14.80, 0.08, 7.50),  // 22: Lower dyke apex
+  new THREE.Vector3(16.50, 0.08, 5.50),  // 23: Lower dyke sweep
+  new THREE.Vector3(21.00, 0.08, 5.50),  // 24: Lower dyke rise
+  new THREE.Vector3(26.00, 0.08, 5.50),  // 25: Lower dyke sweep
+  new THREE.Vector3(31.50, 0.08, 5.50),  // 26: Lower dyke sprint
+  new THREE.Vector3(36.50, 0.08, 2.50),  // 27: Dyke straight
+  new THREE.Vector3(41.00, 0.08, -0.50), // 28: Dyke transition
+  new THREE.Vector3(44.50, 0.08, -3.00), // 29: Dyke straight
+  new THREE.Vector3(46.89, 0.10, -6.54), // 30: CP 3 (Dyke entrance)
 
   // Segment 3: Dyke sweep and approach to outer southern hairpin CP 4
-  new THREE.Vector3(47.32, 0.08, -10.69), // 16: Dyke curve (centered)
-  new THREE.Vector3(45.83, 0.08, -13.96), // 17: Sweeper (centered)
-  new THREE.Vector3(39.79, 0.08, -18.06), // 18: South curve (centered)
-  new THREE.Vector3(33.40, 0.08, -20.60), // 19: Hairpin entry
-  new THREE.Vector3(26.04, 0.08, -24.22), // 20: Hairpin approach (centered)
-  new THREE.Vector3(21.64, 0.10, -28.44), // 21: CP 4 (Outer south hairpin - centered)
+  new THREE.Vector3(47.32, 0.08, -10.69), // 31: Dyke curve
+  new THREE.Vector3(45.83, 0.08, -13.96), // 32: Sweeper
+  new THREE.Vector3(39.79, 0.08, -18.06), // 33: South curve
+  new THREE.Vector3(33.40, 0.08, -20.60), // 34: Hairpin entry
+  new THREE.Vector3(26.04, 0.08, -24.22), // 35: Hairpin approach
+  new THREE.Vector3(21.64, 0.10, -28.44), // 36: CP 4 (Outer south hairpin)
 
   // Segment 4: Mountain pass chicane leading to CP 5
-  new THREE.Vector3(16.20, 0.08, -27.36), // 22: Hairpin exit (centered)
-  new THREE.Vector3(13.59, 0.08, -23.28), // 23: Chicane entry (centered)
-  new THREE.Vector3(12.85, 0.08, -16.97), // 24: S-curve 1 (centered)
-  new THREE.Vector3(19.19, 0.08, -14.03), // 25: S-curve 2 (centered)
-  new THREE.Vector3(19.52, 0.08, -8.70),  // 26: S-curve apex (centered)
-  new THREE.Vector3(17.57, 0.08, -2.46),  // 27: Pass bend (centered)
-  new THREE.Vector3(10.87, 0.08, -4.98),  // 28: Tunnel pass (centered)
-  new THREE.Vector3(7.24, 0.08, -9.15),   // 29: Mid pass (centered)
-  new THREE.Vector3(1.91, 0.08, -11.05),  // 30: Pass curve (centered)
-  new THREE.Vector3(-3.16, 0.08, -12.26), // 31: West pass (centered)
-  new THREE.Vector3(-6.49, 0.08, -10.35), // 32: Mountain turn (centered)
-  new THREE.Vector3(-10.97, 0.08, -1.40), // 33: Switchback (centered)
-  new THREE.Vector3(-14.09, 0.08, 2.40),  // 34: Canyon turn (centered)
-  new THREE.Vector3(-20.06, 0.08, -1.62), // 35: Ridge turn (centered)
-  new THREE.Vector3(-19.99, 0.08, -8.56), // 36: Ridge descent (centered)
-  new THREE.Vector3(-23.89, 0.08, -13.69), // 37: Pass approach (centered)
-  new THREE.Vector3(-24.89, 0.08, -19.32), // 38: Pass apex (centered)
-  new THREE.Vector3(-26.13, 0.10, -18.70), // 39: CP 5 (Mountain pass - centered)
+  new THREE.Vector3(16.20, 0.08, -27.36), // 37: Hairpin exit
+  new THREE.Vector3(14.00, 0.08, -23.28), // 38: Chicane entry
+  new THREE.Vector3(14.50, 0.08, -16.97), // 39: S-curve 1
+  new THREE.Vector3(18.50, 0.08, -14.03), // 40: S-curve 2
+  new THREE.Vector3(18.20, 0.08, -8.50),  // 41: S-curve apex
+  new THREE.Vector3(15.00, 0.08, -4.50),  // 42: Pass bend
+  new THREE.Vector3(10.87, 0.08, -4.98),  // 43: Tunnel pass
+  new THREE.Vector3(7.24, 0.08, -9.15),   // 44: Mid pass
+  new THREE.Vector3(1.91, 0.08, -11.05),  // 45: Pass curve
+  new THREE.Vector3(-3.16, 0.08, -12.26), // 46: West pass
+  new THREE.Vector3(-6.49, 0.08, -10.35), // 47: Mountain turn
+  new THREE.Vector3(-8.50, 0.08, -5.50),  // 48: Pass approach
+  new THREE.Vector3(-10.97, 0.08, -1.40), // 49: Switchback entry
+  new THREE.Vector3(-13.00, 0.08, 0.50),  // 50: Canyon turn
+  new THREE.Vector3(-17.00, 0.08, -3.50), // 51: Canyon midpoint
+  new THREE.Vector3(-20.50, 0.08, -8.50), // 52: Canyon descent
+  new THREE.Vector3(-21.00, 0.08, -12.00),// 53: Canyon exit
+  new THREE.Vector3(-21.50, 0.08, -15.00),// 54: Pass approach
+  new THREE.Vector3(-25.20, 0.08, -18.50),// 55: Pass apex
+  new THREE.Vector3(-26.13, 0.10, -18.70),// 56: CP 5 (Mountain pass)
 
   // Segment 5: Western sweeping loop to CP 6
-  new THREE.Vector3(-28.03, 0.08, -21.63), // 40: Mountain pass exit
-  new THREE.Vector3(-33.83, 0.08, -20.99), // 41: West turn
-  new THREE.Vector3(-39.08, 0.08, -18.57), // 42: Outer west curve
-  new THREE.Vector3(-43.47, 0.08, -14.63), // 43: Sweeper entry
-  new THREE.Vector3(-46.81, 0.08, -9.84),  // 44: West apex
-  new THREE.Vector3(-48.32, 0.08, -4.28),  // 45: West bank
-  new THREE.Vector3(-46.58, 0.08, 1.34),   // 46: Straight approach
-  new THREE.Vector3(-42.80, 0.10, 5.80),   // 47: CP 6 (Final straight entrance)
+  new THREE.Vector3(-28.03, 0.08, -21.63), // 57: Mountain pass exit
+  new THREE.Vector3(-33.83, 0.08, -20.99), // 58: West turn
+  new THREE.Vector3(-39.08, 0.08, -18.57), // 59: Outer west curve
+  new THREE.Vector3(-42.00, 0.08, -15.00), // 60: Sweeper entry
+  new THREE.Vector3(-46.00, 0.08, -9.84),  // 61: West apex
+  new THREE.Vector3(-46.50, 0.08, -3.50),  // 62: West bank
+  new THREE.Vector3(-46.00, 0.08, 1.34),   // 63: Straight approach
+  new THREE.Vector3(-42.80, 0.10, 5.80),   // 64: CP 6 (Final straight entrance)
 
   // Segment 6: Final straightaway back to Start Line
-  new THREE.Vector3(-36.52, 0.08, 5.63),  // 48: Straight 1
-  new THREE.Vector3(-31.36, 0.08, 3.09),  // 49: Straight 2
-  new THREE.Vector3(-26.00, 0.08, 2.93),  // 50: Straight 3
-  new THREE.Vector3(-21.23, 0.08, 5.94),  // 51: Straight 4
-  new THREE.Vector3(-17.12, 0.08, 10.23), // 52: Pre-grid bend
-  new THREE.Vector3(-12.06, 0.08, 12.98), // 53: Grid approach
+  new THREE.Vector3(-36.52, 0.08, 5.63),  // 65: Straight 1
+  new THREE.Vector3(-31.36, 0.08, 4.00),  // 66: Straight 2
+  new THREE.Vector3(-26.00, 0.08, 4.50),  // 67: Straight 3
+  new THREE.Vector3(-21.23, 0.08, 6.25),  // 68: Straight 4
+  new THREE.Vector3(-17.00, 0.08, 9.25),  // 69: Pre-grid bend
+  new THREE.Vector3(-12.00, 0.08, 11.00), // 70: Grid approach
 ];
 
-// Reversed 54-Waypoint Centerline for Reverse Track Circuit
+// Reversed 69-Waypoint Centerline for Reverse Track Circuit
 export const CIRCUIT_WAYPOINTS_REVERSE: THREE.Vector3[] = [
   CIRCUIT_WAYPOINTS[0],
   ...CIRCUIT_WAYPOINTS.slice(1).reverse(),
@@ -270,8 +288,11 @@ export class CompetitionManager {
       car.update(delta, colliders, this.playerVehicle.position, playerTotalProgress);
     }
 
-    // 3. High-Impact Forza Horizon Multi-Car Physical Collision Engine
-    this.resolveCarCollisions(onPlayerCollision);
+    // 3. High-Impact Forza Horizon Multi-Car Physical Collision Engine (Active only during race)
+    const gState = useGameStore.getState().gameState;
+    if (gState === 'racing') {
+      this.resolveCarCollisions(onPlayerCollision);
+    }
 
     // 4. Compute Live Race Standings
     const entries: CompetitorEntry[] = [
@@ -307,6 +328,15 @@ export class CompetitionManager {
       }
     });
 
+    // Detect Overtake Stunt (Active only during race)
+    if (gState === 'racing' && this.lastReportedRank !== -1 && playerRank < this.lastReportedRank) {
+      const store = useGameStore.getState();
+      const overtakerPos = entries.find((e) => e.position === playerRank + 1);
+      const targetName = overtakerPos ? overtakerPos.name.toUpperCase() : 'RIVAL';
+      store.triggerStunt(`PASSED ${targetName}! 🏆`, 150, 'overtake');
+      soundEffects.playStuntScore();
+    }
+
     // Update telemetry in Game Store ONLY when rank actually changes
     if (playerRank !== this.lastReportedRank) {
       this.lastReportedRank = playerRank;
@@ -315,6 +345,28 @@ export class CompetitionManager {
         totalRacers: entries.length,
       });
     }
+
+    // Export real-time positions for AAA Minimap Radar & Leaderboard
+    const fullLeaderboard = entries.map((entry) => {
+      let x = 0;
+      let z = 0;
+      if (entry.isPlayer) {
+        x = this.playerVehicle.position.x;
+        z = this.playerVehicle.position.z;
+      } else {
+        const ai = this.aiCars.find((c) => c.id === entry.id);
+        if (ai) {
+          x = ai.position.x;
+          z = ai.position.z;
+        }
+      }
+      return {
+        ...entry,
+        x,
+        z,
+      };
+    });
+    useGameStore.getState().updateLeaderboard(fullLeaderboard);
 
     return { playerRank, leaderboard: entries };
   }

@@ -10,6 +10,7 @@ import { SkidmarkManager } from './SkidmarkManager';
 import { LightTrailManager } from './LightTrailManager';
 import { CompetitionManager } from './CompetitionManager';
 import { NitroPickupManager } from './NitroPickupManager';
+import { HotWheelsPickupManager } from './HotWheelsPickupManager';
 import { useGameStore } from '../store/useGameStore';
 import { soundEffects } from '../audio/SoundEffects';
 import { CarModelId, CAR_PRESETS } from '../types/game';
@@ -33,6 +34,7 @@ export class GameEngine {
   public skidmarkManager: SkidmarkManager;
   public lightTrailManager: LightTrailManager;
   public nitroPickupManager: NitroPickupManager;
+  public hotWheelsPickupManager: HotWheelsPickupManager;
   private dirLight: THREE.DirectionalLight | null = null;
   private magmaLight: THREE.PointLight | null = null;
 
@@ -46,6 +48,8 @@ export class GameEngine {
   private raceStartTime = 0;
   private totalRaceTime = 0;
   private isFinished = false;
+  private welcomeAngle = 0;
+  private countdownTimer: number | null = null;
 
   // FPS & Performance Profiling
   private frameCount = 0;
@@ -103,6 +107,7 @@ export class GameEngine {
     this.cinematicDirector = new CinematicDirector(this.camera);
     this.cinematicDirector.carScale = this.vehicle.carScale;
     this.nitroPickupManager = new NitroPickupManager(this.scene);
+    this.hotWheelsPickupManager = new HotWheelsPickupManager(this.scene);
 
     // 6. Lighting
     this.setupLighting();
@@ -165,6 +170,7 @@ export class GameEngine {
 
       this.vehicle.setColliders(this.track.colliders, this.track.barriers);
       this.nitroPickupManager.initPickups(this.track.colliders);
+      this.hotWheelsPickupManager.initPickups(this.track.colliders);
 
       const initialCarId = store.carId || 'mazda';
       const initialCarName = CAR_PRESETS[initialCarId]?.name || 'Mazda LM Vision';
@@ -183,11 +189,9 @@ export class GameEngine {
       this.competitionManager.resetGrid('reverse');
 
       store.setLoading(false);
-      store.startGame();
-      store.setNotification('READY... GO! 🔥 [WASD] Drive • [SPACE] Drift • [M] Track Mode • [C] Camera');
+      store.setGameState('welcome');
+      store.setNotification('WELCOME TO VOLCANO GRAND PRIX! 🏁 Click START RACE to ignite engine');
 
-      this.raceStartTime = performance.now();
-      this.lapStartTime = performance.now();
       this.startLoop();
     } catch (err) {
       console.error('Failed to initialize game engine:', err);
@@ -195,7 +199,79 @@ export class GameEngine {
     }
   }
 
+  startRaceCountdown() {
+    const store = useGameStore.getState();
+    soundEffects.init();
+    soundEffects.resume();
+
+    // 1. Clear any active countdown timer
+    if (this.countdownTimer !== null) {
+      clearInterval(this.countdownTimer);
+      this.countdownTimer = null;
+    }
+
+    // 2. Lock player car and AI rivals in their exact starting grid spots
+    this.vehicle.setSpawn(this.track.spawnPosition, this.track.spawnHeading);
+    this.competitionManager.resetGrid(this.track.trackDirection);
+
+    store.setGameState('countdown');
+    store.setCountdownValue(3);
+    store.setIsPerfectLaunch(false);
+    soundEffects.playCountdown(3);
+
+    let step = 3;
+    this.countdownTimer = window.setInterval(() => {
+      step--;
+      if (step > 0) {
+        store.setCountdownValue(step);
+        soundEffects.playCountdown(step as 2 | 1);
+      } else if (step === 0) {
+        if (this.countdownTimer !== null) {
+          clearInterval(this.countdownTimer);
+          this.countdownTimer = null;
+        }
+        store.setCountdownValue(0);
+        soundEffects.playCountdown(0);
+
+        // Check for launch boost
+        if (this.vehicle.getTelemetry().rpm > 5500) {
+          store.setIsPerfectLaunch(true);
+          const fwd = this.vehicle.forwardVec;
+          this.vehicle.applyCollisionImpulse(
+            new THREE.Vector3(fwd.x * 3.5, 0, fwd.z * 3.5),
+            this.vehicle.position
+          );
+          store.triggerStunt('PERFECT LAUNCH! 🚀', 250, 'boost');
+        }
+
+        store.setGameState('racing');
+        store.setPaused(false);
+        this.raceStartTime = performance.now();
+        this.lapStartTime = performance.now();
+
+        setTimeout(() => {
+          store.setCountdownValue(null);
+          store.setIsPerfectLaunch(false);
+        }, 1200);
+      }
+    }, 1000);
+  }
+
   private onKeyDown = (e: KeyboardEvent) => {
+    const store = useGameStore.getState();
+
+    // Pause Toggle [Escape / P]
+    if (e.code === 'Escape' || e.code === 'KeyP') {
+      if (store.isCarSelectOpen) {
+        store.setCarSelectOpen(false);
+      } else if (store.isCareerModalOpen) {
+        store.setCareerModalOpen(false);
+      } else if (store.gameState === 'racing' || store.gameState === 'paused') {
+        store.togglePause();
+      }
+      return;
+    }
+
     // Camera Switch [C]
     if (e.code === 'KeyC') {
       this.cycleCamera();
@@ -339,8 +415,19 @@ export class GameEngine {
     this.followCamera.resetZoom();
     this.track.resetCoins();
     this.nitroPickupManager.resetAll();
+    this.hotWheelsPickupManager.resetAll();
     useGameStore.getState().resetRace();
     useGameStore.getState().setNotification(`Race Reset! Mode: ${this.track.trackDirection.toUpperCase()} 🏁`);
+  }
+
+  restartRaceCountdown() {
+    this.resetRace();
+    this.startRaceCountdown();
+  }
+
+  setCarPaint(hexColor: string) {
+    this.vehicle.setPaintColor(hexColor);
+    useGameStore.getState().setCarPaint(hexColor);
   }
 
   async switchCar(carId: CarModelId): Promise<void> {
@@ -384,6 +471,7 @@ export class GameEngine {
       this.smoothDelta = this.smoothDelta * 0.82 + clampedDelta * 0.18;
       const delta = this.smoothDelta;
       const now = performance.now();
+      const store = useGameStore.getState();
 
       // FPS tracking
       this.frameCount++;
@@ -391,6 +479,29 @@ export class GameEngine {
         this.currentFps = Math.round((this.frameCount * 1000) / (now - this.lastFpsTime));
         this.frameCount = 0;
         this.lastFpsTime = now;
+      }
+
+      // Welcome State: Cinematic Camera Orbit around starting grid
+      if (store.gameState === 'welcome') {
+        this.welcomeAngle += delta * 0.42;
+        const carPos = this.vehicle.position;
+        const radius = 9.2;
+        const camHeight = 3.2;
+        this.camera.position.set(
+          carPos.x + Math.sin(this.welcomeAngle) * radius,
+          carPos.y + camHeight,
+          carPos.z + Math.cos(this.welcomeAngle) * radius
+        );
+        this.camera.lookAt(carPos.x, carPos.y + 0.9, carPos.z);
+        this.track.update(delta, this.camera, this.vehicle.position, 0);
+        this.renderer.render(this.scene, this.camera);
+        return;
+      }
+
+      // Paused State: Freeze dynamic world but render frame
+      if (store.gameState === 'paused' || store.paused) {
+        this.renderer.render(this.scene, this.camera);
+        return;
       }
 
       if (!this.isFinished) {
@@ -432,11 +543,26 @@ export class GameEngine {
                 this.isFinished = true;
                 soundEffects.playVictory();
                 confetti({
-                  particleCount: 160,
-                  spread: 85,
+                  particleCount: 220,
+                  spread: 90,
                   origin: { y: 0.6 },
                 });
-                useGameStore.getState().setNotification('🏆 RACE FINISHED! VICTORY!');
+
+                const gStore = useGameStore.getState();
+                const playerStanding = gStore.leaderboard.find(r => r.isPlayer);
+                const place = playerStanding ? playerStanding.position : 1;
+                const totalSeconds = this.totalRaceTime;
+
+                // 3-Star Rating: 1★ Finish Race, 2★ Podium Top 3, 3★ 1st Place or Sub 180s
+                let starsEarned = 1;
+                if (place <= 3) starsEarned++;
+                if (place === 1 || totalSeconds < 185) starsEarned++;
+
+                const xpGained = place === 1 ? 600 : (place === 2 ? 400 : 250);
+                gStore.awardStars(starsEarned, this.track.trackDirection);
+                gStore.addDriverXp(xpGained, gStore.coinsCollected, place === 1);
+                gStore.setGameState('victory');
+                gStore.setNotification(`🏆 RACE FINISHED! ${place === 1 ? '1ST PLACE VICTORY!' : `${place}TH PLACE PODIUM!`}`);
               } else {
                 this.currentLap++;
                 this.lapStartTime = performance.now();
@@ -456,14 +582,14 @@ export class GameEngine {
         });
       }
 
-      // 3. Dynamic Particles, Nitro Pickups, Tire Skidmarks & Asphalt Light Trails
+      // 3. Dynamic Particles, Nitro Pickups, Hot Wheels Collectibles, Tire Skidmarks & Asphalt Light Trails
       this.nitroPickupManager.update(delta, this.vehicle, this.competitionManager.aiCars, this.particleManager);
+      this.hotWheelsPickupManager.update(delta, this.vehicle, this.competitionManager.aiCars, this.particleManager);
       this.particleManager.update(delta, this.vehicle.position);
       this.skidmarkManager.update(delta);
-      this.lightTrailManager.update(delta, this.vehicle, this.competitionManager.aiCars);
+      this.lightTrailManager.update(delta, this.vehicle, this.competitionManager.aiCars, this.camera);
 
       // 4. Camera Update
-      const store = useGameStore.getState();
       if (store.cameraMode === 'far') {
         this.orbitControls.enabled = true;
         this.orbitControls.target.lerp(this.vehicle.position, delta * 8);
@@ -536,6 +662,10 @@ export class GameEngine {
   }
 
   dispose() {
+    if (this.countdownTimer !== null) {
+      clearInterval(this.countdownTimer);
+      this.countdownTimer = null;
+    }
     if (this.animationFrameId) {
       cancelAnimationFrame(this.animationFrameId);
     }
@@ -546,6 +676,7 @@ export class GameEngine {
     this.track.dispose();
     this.competitionManager.dispose();
     this.nitroPickupManager.dispose();
+    this.hotWheelsPickupManager.dispose();
     this.skidmarkManager.dispose();
     this.lightTrailManager.dispose();
     this.vehicle.dispose();

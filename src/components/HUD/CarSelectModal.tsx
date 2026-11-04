@@ -1,18 +1,44 @@
 import React, { useEffect } from 'react';
-import { X, Car, Gauge, Zap, Flame, CheckCircle2, ChevronRight, Trophy } from 'lucide-react';
+import {
+  X,
+  Car,
+  Gauge,
+  Zap,
+  Flame,
+  CheckCircle2,
+  ChevronRight,
+  Trophy,
+  Palette,
+  Volume2,
+} from 'lucide-react';
 import { useGameStore } from '../../store/useGameStore';
 import { CAR_PRESETS, CarModelId } from '../../types/game';
 import { soundEffects } from '../../audio/SoundEffects';
 
 interface CarSelectModalProps {
   onSelectCar: (carId: CarModelId) => void;
+  onSelectPaint?: (hexColor: string) => void;
 }
 
-export const CarSelectModal: React.FC<CarSelectModalProps> = ({ onSelectCar }) => {
+const PAINT_LIVERIES = [
+  { name: 'Apex White', hex: '#ffffff' },
+  { name: 'Volcanic Crimson', hex: '#dc2626' },
+  { name: 'Cyber Cyan', hex: '#06b6d4' },
+  { name: 'Midnight Shadow', hex: '#111827' },
+  { name: 'Sunset Gold', hex: '#f59e0b' },
+  { name: 'Acid Emerald', hex: '#10b981' },
+];
+
+export const CarSelectModal: React.FC<CarSelectModalProps> = ({
+  onSelectCar,
+  onSelectPaint,
+}) => {
   const isCarSelectOpen = useGameStore((state) => state.isCarSelectOpen);
   const toggleCarSelect = useGameStore((state) => state.toggleCarSelect);
   const currentCarId = useGameStore((state) => state.carId);
   const setCarId = useGameStore((state) => state.setCarId);
+  const carPaint = useGameStore((state) => state.carPaint);
+  const setCarPaint = useGameStore((state) => state.setCarPaint);
 
   // Close on Escape key
   useEffect(() => {
@@ -33,7 +59,19 @@ export const CarSelectModal: React.FC<CarSelectModalProps> = ({ onSelectCar }) =
     soundEffects.playCoin();
     setCarId(carId);
     onSelectCar(carId);
-    toggleCarSelect();
+  };
+
+  const handlePaintSelect = (hex: string) => {
+    soundEffects.playClick();
+    setCarPaint(hex);
+    if (onSelectPaint) {
+      onSelectPaint(hex);
+    }
+  };
+
+  const handleTestEngine = () => {
+    soundEffects.playRevEngine();
+    useGameStore.getState().setNotification('V8 Twin-Turbo Engine Rev Tested! 🔊');
   };
 
   const getCarBadge = (id: CarModelId) => {
@@ -48,7 +86,7 @@ export const CarSelectModal: React.FC<CarSelectModalProps> = ({ onSelectCar }) =
       <div className="absolute inset-0 bg-radial from-orange-600/10 via-transparent to-black pointer-events-none" />
 
       {/* Main Garage Card */}
-      <div className="relative w-full max-w-4xl bg-[#131518]/95 border border-white/10 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[92vh] pointer-events-auto">
+      <div className="relative w-full max-w-4xl bg-[#131518]/95 border border-white/10 rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[92vh] pointer-events-auto">
         {/* Header */}
         <div className="px-6 py-4 border-b border-white/10 flex items-center justify-between bg-black/40">
           <div className="flex items-center space-x-3.5">
@@ -58,25 +96,36 @@ export const CarSelectModal: React.FC<CarSelectModalProps> = ({ onSelectCar }) =
             <div>
               <div className="flex items-center space-x-2">
                 <h2 className="text-xl font-black tracking-wider uppercase text-white font-sans">
-                  VOLCANO GARAGE
+                  VOLCANO GARAGE & SHOWROOM
                 </h2>
                 <span className="text-[10px] bg-red-500/20 text-red-400 px-2.5 py-0.5 rounded-full border border-red-500/40 font-mono font-semibold tracking-wider">
                   DEEPAK GUSAIWAL MOTORSPORTS
                 </span>
               </div>
               <p className="text-xs text-gray-400 font-medium">
-                High-performance fleet curated by Deepak Gusaiwal for the magma circuit
+                High-performance fleet & custom liveries curated for the magma circuit
               </p>
             </div>
           </div>
 
-          <button
-            onClick={toggleCarSelect}
-            className="w-9 h-9 rounded-xl bg-white/5 hover:bg-white/15 text-gray-400 hover:text-white flex items-center justify-center transition-all border border-white/10 cursor-pointer pointer-events-auto"
-            title="Close Garage (Esc / V)"
-          >
-            <X className="w-5 h-5" />
-          </button>
+          <div className="flex items-center space-x-2">
+            <button
+              onClick={handleTestEngine}
+              className="px-3 py-1.5 rounded-xl bg-orange-500/20 hover:bg-orange-500/30 text-orange-400 text-xs font-bold border border-orange-500/40 flex items-center space-x-1.5 transition-all cursor-pointer"
+              title="Test Engine Rev Audio"
+            >
+              <Volume2 className="w-3.5 h-3.5" />
+              <span>TEST REVS</span>
+            </button>
+
+            <button
+              onClick={toggleCarSelect}
+              className="w-9 h-9 rounded-xl bg-white/5 hover:bg-white/15 text-gray-400 hover:text-white flex items-center justify-center transition-all border border-white/10 cursor-pointer pointer-events-auto"
+              title="Close Garage (Esc / G)"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
         </div>
 
         {/* Cars Showcase Grid */}
@@ -99,7 +148,7 @@ export const CarSelectModal: React.FC<CarSelectModalProps> = ({ onSelectCar }) =
                 {isSelected && (
                   <div className="absolute -top-3 right-4 bg-gradient-to-r from-orange-500 to-amber-500 text-black text-[10px] font-black tracking-wider uppercase px-2.5 py-0.5 rounded-full shadow-lg flex items-center space-x-1">
                     <CheckCircle2 className="w-3 h-3 text-black stroke-[3]" />
-                    <span>ACTIVE</span>
+                    <span>ACTIVE DRIVER</span>
                   </div>
                 )}
 
@@ -177,7 +226,7 @@ export const CarSelectModal: React.FC<CarSelectModalProps> = ({ onSelectCar }) =
                       <div className="flex justify-between text-[11px] mb-1 font-medium">
                         <span className="flex items-center space-x-1.5 text-gray-400">
                           <Flame className="w-3.5 h-3.5 text-red-400" />
-                          <span>DRIFT RATING</span>
+                          <span>DRIFT AGILITY</span>
                         </span>
                         <span className="font-mono font-bold text-white">{car.driftMultiplier >= 3.8 ? 'MAX' : 'HIGH'}</span>
                       </div>
@@ -203,7 +252,7 @@ export const CarSelectModal: React.FC<CarSelectModalProps> = ({ onSelectCar }) =
                       : 'bg-white/10 text-white hover:bg-white/20 border border-white/10'
                   }`}
                 >
-                  <span>{isSelected ? 'CURRENTLY DRIVING' : 'SELECT & DRIVE'}</span>
+                  <span>{isSelected ? 'CURRENTLY EQUIPPED' : 'SELECT & DRIVE'}</span>
                   {!isSelected && <ChevronRight className="w-4 h-4 text-orange-400 group-hover:translate-x-0.5 transition-transform" />}
                 </button>
               </div>
@@ -211,17 +260,48 @@ export const CarSelectModal: React.FC<CarSelectModalProps> = ({ onSelectCar }) =
           })}
         </div>
 
+        {/* Custom Livery Paint Selector Strip */}
+        <div className="px-6 py-3.5 border-t border-white/10 bg-black/50 flex flex-col sm:flex-row items-center justify-between gap-3">
+          <div className="flex items-center space-x-2 text-xs font-bold text-gray-300">
+            <Palette className="w-4 h-4 text-orange-400" />
+            <span className="uppercase tracking-wider">CUSTOM BODY LIVERY PAINT:</span>
+          </div>
+
+          <div className="flex items-center space-x-2.5">
+            {PAINT_LIVERIES.map((paint) => (
+              <button
+                key={paint.hex}
+                onClick={() => handlePaintSelect(paint.hex)}
+                className={`w-7 h-7 rounded-full border-2 transition-transform active:scale-90 cursor-pointer flex items-center justify-center ${
+                  carPaint === paint.hex
+                    ? 'border-white scale-110 shadow-[0_0_12px_rgba(255,255,255,0.7)]'
+                    : 'border-white/20 hover:scale-105'
+                }`}
+                style={{ backgroundColor: paint.hex }}
+                title={paint.name}
+              >
+                {carPaint === paint.hex && (
+                  <div className={`w-2 h-2 rounded-full ${paint.hex === '#ffffff' ? 'bg-black' : 'bg-white'}`} />
+                )}
+              </button>
+            ))}
+          </div>
+        </div>
+
         {/* Footer info bar */}
-        <div className="px-6 py-3 border-t border-white/10 bg-black/40 flex items-center justify-between text-xs text-gray-400">
+        <div className="px-6 py-3 border-t border-white/10 bg-black/70 flex items-center justify-between text-xs text-gray-400">
           <div className="flex items-center space-x-2">
-            <kbd className="bg-black/60 px-1.5 py-0.5 rounded border border-gray-700 text-white font-mono text-[10px]">V</kbd>
-            <span>or</span>
             <kbd className="bg-black/60 px-1.5 py-0.5 rounded border border-gray-700 text-white font-mono text-[10px]">ESC</kbd>
-            <span className="text-gray-500">to close garage</span>
+            <span className="text-gray-500">or</span>
+            <kbd className="bg-black/60 px-1.5 py-0.5 rounded border border-gray-700 text-white font-mono text-[10px]">G</kbd>
+            <span className="text-gray-500">to exit garage</span>
           </div>
-          <div className="text-[11px] text-orange-400/90 font-medium hidden sm:inline">
-            Each car features custom downforce, gear ratios, and wheel physics!
-          </div>
+          <button
+            onClick={toggleCarSelect}
+            className="px-4 py-1.5 bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-400 hover:to-amber-400 text-black font-black text-xs uppercase tracking-wider rounded-xl transition-all cursor-pointer shadow"
+          >
+            CONFIRM & RETURN TO RACE
+          </button>
         </div>
       </div>
     </div>

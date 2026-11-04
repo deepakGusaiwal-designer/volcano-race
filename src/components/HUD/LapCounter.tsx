@@ -35,57 +35,57 @@ export const LapCounter: React.FC = () => {
   const rank = getRankBadge(racePosition);
 
   return (
-    <div className="racing-panel rounded-2xl p-4 flex flex-col space-y-2 select-none shadow-xl border border-orange-500/30 min-w-56">
+    <div className="racing-panel rounded-2xl p-3 flex flex-col space-y-1.5 select-none shadow-xl border border-orange-500/30 min-w-44 sm:min-w-48">
       {/* Live Race Position */}
-      <div className="flex items-center justify-between border-b border-white/10 pb-2">
-        <div className="flex items-center space-x-1.5 text-cyan-400 font-bold text-sm">
-          <Trophy className="w-4 h-4" />
+      <div className="flex items-center justify-between border-b border-white/10 pb-1.5">
+        <div className="flex items-center space-x-1.5 text-cyan-400 font-bold text-xs">
+          <Trophy className="w-3.5 h-3.5" />
           <span>POSITION</span>
         </div>
-        <div className="flex items-baseline space-x-1.5">
-          <span className={`text-xl font-black px-2 py-0.5 rounded border ${rank.color}`}>
+        <div className="flex items-baseline space-x-1">
+          <span className={`text-base font-black px-1.5 py-0.5 rounded border ${rank.color}`}>
             {rank.text}
           </span>
-          <span className="text-gray-500 text-xs font-semibold"> / {totalRacers}</span>
+          <span className="text-gray-500 text-[10px] font-semibold"> / {totalRacers}</span>
         </div>
       </div>
 
       {/* Current Lap */}
-      <div className="flex items-center justify-between border-b border-white/10 pb-2">
-        <div className="flex items-center space-x-1.5 text-orange-400 font-bold text-sm">
-          <Flag className="w-4 h-4" />
+      <div className="flex items-center justify-between border-b border-white/10 pb-1.5">
+        <div className="flex items-center space-x-1.5 text-orange-400 font-bold text-xs">
+          <Flag className="w-3.5 h-3.5" />
           <span>LAP</span>
         </div>
-        <div className="text-xl font-black tracking-tight text-white">
+        <div className="text-base font-black tracking-tight text-white">
           <span className="text-orange-400 glow-orange">{lap}</span>
-          <span className="text-gray-500 text-sm font-semibold"> / {totalLaps}</span>
+          <span className="text-gray-500 text-xs font-semibold"> / {totalLaps}</span>
         </div>
       </div>
 
       {/* Lap Timer */}
-      <div className="flex items-center justify-between text-xs">
+      <div className="flex items-center justify-between text-[11px]">
         <span className="text-gray-400 flex items-center space-x-1">
-          <Timer className="w-3.5 h-3.5" />
+          <Timer className="w-3 h-3" />
           <span>CURRENT</span>
         </span>
-        <span className="font-mono text-sm font-bold text-yellow-300">
+        <span className="font-mono text-xs font-bold text-yellow-300">
           {formatTime(lapTime)}
         </span>
       </div>
 
       {/* Best Lap */}
-      <div className="flex items-center justify-between text-xs">
+      <div className="flex items-center justify-between text-[11px]">
         <span className="text-gray-400 flex items-center space-x-1">
-          <Award className="w-3.5 h-3.5 text-yellow-400" />
+          <Award className="w-3 h-3 text-yellow-400" />
           <span>BEST</span>
         </span>
-        <span className="font-mono text-sm font-bold text-green-400">
+        <span className="font-mono text-xs font-bold text-green-400">
           {bestLapTime ? formatTime(bestLapTime) : '--:--.-'}
         </span>
       </div>
 
       {/* Checkpoints & Coins */}
-      <div className="flex items-center justify-between pt-1 border-t border-white/5 text-[11px] text-gray-300">
+      <div className="flex items-center justify-between pt-1 border-t border-white/5 text-[10px] text-gray-300">
         <div>
           <span>GATE: </span>
           <span className="text-cyan-400 font-bold">

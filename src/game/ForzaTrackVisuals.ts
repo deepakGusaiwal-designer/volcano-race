@@ -74,9 +74,9 @@ export class ForzaTrackVisuals {
         n.includes('rock') ||
         n.includes('boulder') ||
         n.includes('wall') ||
-        n.includes('_2') ||
         n.includes('magma_top') ||
-        n.includes('magma_near')
+        n.includes('magma_near') ||
+        n.includes('roadblock')
       ) {
         return false;
       }
@@ -127,12 +127,41 @@ export class ForzaTrackVisuals {
     for (const h of hits) {
       if (h.face) {
         const norm = h.face.normal.clone().transformDirection(h.object.matrixWorld).normalize();
-        if (norm.y >= 0.30 && Math.abs(h.point.y - baselineY) < 2.2) {
+        if (norm.y >= 0.30 && Math.abs(h.point.y - baselineY) < 1.8 && h.point.y > -0.20) {
           return { hit: true, y: h.point.y };
         }
       }
     }
     return { hit: false, y: baselineY };
+  }
+
+  // Measures physical asphalt edge distance from a point outward along the lateral normal
+  public measureRoadEdge(
+    pt: THREE.Vector3,
+    latNorm: THREE.Vector3,
+    side: number,
+    baseY: number,
+    roadMeshes: THREE.Object3D[]
+  ): { found: boolean; dist: number } {
+    let lastDist = 0;
+    let found = false;
+    let misses = 0;
+    for (let d = 0.15; d <= 3.8; d += 0.15) {
+      const qx = pt.x + latNorm.x * d * side;
+      const qz = pt.z + latNorm.z * d * side;
+      const probe = this.probeRoadPoint(qx, qz, baseY, roadMeshes);
+      if (probe.hit) {
+        lastDist = d;
+        found = true;
+        misses = 0;
+      } else {
+        if (found) {
+          misses++;
+          if (misses >= 3) break;
+        }
+      }
+    }
+    return { found, dist: lastDist };
   }
 
   // Dynamically measures the actual road boundary width from spline point outward along normal
@@ -684,27 +713,111 @@ export class ForzaTrackVisuals {
     this.drivingLineSegments = [];
     const dummy = new THREE.Object3D();
 
+    // Pass 1: Measure physical road boundaries along the lateral normal and compute centered positions
+    const rawCenterPositions: THREE.Vector3[] = [];
+
     for (let i = 0; i < totalSegments; i++) {
       const u = i / totalSegments;
       const pt = this.trackSpline.getPointAt(u);
       const tan = this.trackSpline.getTangentAt(u).normalize();
-      const driveDir = (direction === 'reverse' ? tan.clone().negate() : tan.clone()).normalize();
+      const latNorm = new THREE.Vector3(-tan.z, 0, tan.x).normalize();
 
-      // Precompute local track curvature over an apex window
-      const nextU = (u + (direction === 'reverse' ? -0.012 : 0.012) + 1.0) % 1.0;
-      const nextTan = this.trackSpline.getTangentAt(nextU).normalize();
-      const nextDriveDir = (direction === 'reverse' ? nextTan.clone().negate() : nextTan.clone()).normalize();
-      const angle = tan.angleTo(nextTan);
-      const segDist = pt.distanceTo(this.trackSpline.getPointAt(nextU));
+      // Check if in platform jump gap over water
+      const isJumpGap = (pt.x > 3.8 && pt.x < 11.2 && pt.z > 8.0 && pt.z < 12.0);
+
+      let offset = 0;
+      if (!isJumpGap) {
+        const right = this.measureRoadEdge(pt, latNorm, 1, pt.y, roadMeshes);
+        const left = this.measureRoadEdge(pt, latNorm, -1, pt.y, roadMeshes);
+
+        // Only adjust if BOTH edges found and within realistic track road width
+        if (right.found && left.found) {
+          const totalW = right.dist + left.dist;
+          if (totalW >= 3.2 && totalW <= 7.5) {
+            offset = (right.dist - left.dist) * 0.5;
+            offset = Math.max(-0.6, Math.min(0.6, offset));
+          }
+        }
+      }
+
+      const candidate = pt.clone().add(latNorm.clone().multiplyScalar(offset));
+      if (!isJumpGap) {
+        const verify = this.probeRoadPoint(candidate.x, candidate.z, pt.y, roadMeshes);
+        if (!verify.hit) {
+          rawCenterPositions.push(pt.clone());
+          continue;
+        }
+      }
+      rawCenterPositions.push(candidate);
+    }
+
+    // Pass 2: Multi-pass periodic smoothing (5-tap moving average) across the closed circuit ring
+    const centeredPositions: THREE.Vector3[] = [];
+    for (let i = 0; i < totalSegments; i++) {
+      const pPrev2 = rawCenterPositions[(i - 2 + totalSegments) % totalSegments];
+      const pPrev1 = rawCenterPositions[(i - 1 + totalSegments) % totalSegments];
+      const pCurr = rawCenterPositions[i];
+      const pNext1 = rawCenterPositions[(i + 1) % totalSegments];
+      const pNext2 = rawCenterPositions[(i + 2) % totalSegments];
+
+      const smoothed = new THREE.Vector3()
+        .addScaledVector(pPrev2, 0.1)
+        .addScaledVector(pPrev1, 0.2)
+        .addScaledVector(pCurr, 0.4)
+        .addScaledVector(pNext1, 0.2)
+        .addScaledVector(pNext2, 0.1);
+
+      const isJumpGap = (smoothed.x > 3.8 && smoothed.x < 11.2 && smoothed.z > 8.0 && smoothed.z < 12.0);
+      if (isJumpGap) {
+        // Parabolic jump arc between ramp takeoff (4.09, 0.18) and landing (11.42, 0.10)
+        const t = (smoothed.x - 4.09) / (11.42 - 4.09);
+        smoothed.y = 0.18 * (1 - t) + 0.10 * t + Math.sin(t * Math.PI) * 0.22;
+      } else {
+        // Probe exact asphalt surface elevation at centered coordinate
+        let roadHit = this.probeRoadPoint(smoothed.x, smoothed.z, pCurr.y, roadMeshes);
+        if (!roadHit.hit) {
+          smoothed.x = pCurr.x;
+          smoothed.z = pCurr.z;
+          roadHit = this.probeRoadPoint(smoothed.x, smoothed.z, pCurr.y, roadMeshes);
+        }
+        let y = roadHit.hit ? roadHit.y + 0.026 : pCurr.y + 0.026;
+        if (y < 0.015) y = pCurr.y + 0.026;
+        smoothed.y = y;
+      }
+
+      centeredPositions.push(smoothed);
+    }
+
+    // Pass 3: Orient chevrons along centered line, compute curvature, safe speed & colors
+    for (let i = 0; i < totalSegments; i++) {
+      const u = i / totalSegments;
+      const pos = centeredPositions[i];
+
+      // Forward drive vector along the centered curve
+      const nextIdx = direction === 'reverse'
+        ? (i - 1 + totalSegments) % totalSegments
+        : (i + 1) % totalSegments;
+      const driveDir = new THREE.Vector3().subVectors(centeredPositions[nextIdx], pos).normalize();
+
+      // Apex curvature lookahead over ~5.0m window
+      const lookAheadSteps = direction === 'reverse' ? -8 : 8;
+      const aheadIdx = (i + lookAheadSteps + totalSegments) % totalSegments;
+      const nextAheadIdx = direction === 'reverse'
+        ? (aheadIdx - 1 + totalSegments) % totalSegments
+        : (aheadIdx + 1) % totalSegments;
+      const aheadDriveDir = new THREE.Vector3()
+        .subVectors(centeredPositions[nextAheadIdx], centeredPositions[aheadIdx])
+        .normalize();
+
+      const angle = driveDir.angleTo(aheadDriveDir);
+      const segDist = pos.distanceTo(centeredPositions[aheadIdx]);
       const curvature = segDist > 0.001 ? angle / segDist : 0.05;
 
-      // Realistic cornering speed guide in km/h: straights ~220 km/h, chicane ~85 km/h, hairpin ~58 km/h
+      // Realistic cornering speed guide in km/h
       const safeSpeedKmH = Math.min(220, Math.max(52, Math.sqrt(28 / Math.max(curvature, 0.022)) * 3.6 * 2.1));
 
       // Calculate turn direction using 3D cross product of forward drive vectors
-      // In Three.js coordinates (X=right, Y=up, Z=backward):
-      // driveDir x nextDriveDir has cross.y < -0.003 when turning RIGHT, cross.y > 0.003 when turning LEFT
-      const cross = new THREE.Vector3().crossVectors(driveDir, nextDriveDir);
+      const cross = new THREE.Vector3().crossVectors(driveDir, aheadDriveDir);
       const turnDirection: 'left' | 'right' | 'straight' =
         cross.y < -0.003 ? 'right' : (cross.y > 0.003 ? 'left' : 'straight');
 
@@ -719,14 +832,9 @@ export class ForzaTrackVisuals {
         turnName = turnDirection === 'right' ? 'SWEEPER RIGHT' : 'SWEEPER LEFT';
       }
 
-      // Probe exact asphalt surface elevation
-      const roadHit = this.probeRoadPoint(pt.x, pt.z, pt.y, roadMeshes);
-      const y = roadHit.hit ? roadHit.y + 0.026 : pt.y + 0.026;
-
-      const pos = new THREE.Vector3(pt.x, y, pt.z);
       dummy.position.copy(pos);
       // lookAt opposite drive direction so chevron arrow points along forward driveDir
-      dummy.lookAt(pt.x - driveDir.x, y, pt.z - driveDir.z);
+      dummy.lookAt(pos.x - driveDir.x, pos.y, pos.z - driveDir.z);
       dummy.updateMatrix();
 
       instanced.setMatrixAt(i, dummy.matrix);

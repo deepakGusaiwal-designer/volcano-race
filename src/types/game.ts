@@ -90,6 +90,40 @@ export interface TelemetryData {
   triangles: number;
 }
 
+export type GameState = 'welcome' | 'countdown' | 'racing' | 'paused' | 'victory';
+
+export interface StuntEvent {
+  id: string;
+  text: string;
+  points: number;
+  type: 'drift' | 'air' | 'boost' | 'overtake' | 'clean' | 'combo';
+  timestamp: number;
+}
+
+export interface DriverProfile {
+  name: string;
+  level: number;
+  xp: number;
+  title: string;
+  careerWins: number;
+  careerRaces: number;
+  careerCoins: number;
+  starsClassic: number;
+  starsReverse: number;
+}
+
+export interface LeaderboardRacer {
+  id: string;
+  name: string;
+  position: number;
+  isPlayer: boolean;
+  colorHex: string;
+  progress: number;
+  lap: number;
+  x?: number;
+  z?: number;
+}
+
 export interface CheckpointDef {
   index: number;
   position: [number, number, number];
