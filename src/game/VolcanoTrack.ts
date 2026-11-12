@@ -619,7 +619,84 @@ export class VolcanoTrack {
     });
     this.hazardBeaconMaterials.push(beaconMat);
 
-    // Helper to create a complete realistic "WRONG WAY" barrier unit
+    // 3. Procedural Glowing Red Highlighted Boundary Line Texture (1024x128)
+    const lineCanvas = document.createElement('canvas');
+    lineCanvas.width = 1024;
+    lineCanvas.height = 128;
+    const lCtx = lineCanvas.getContext('2d')!;
+    lCtx.clearRect(0, 0, 1024, 128);
+
+    // Outer red laser glow
+    const grad = lCtx.createLinearGradient(0, 0, 0, 128);
+    grad.addColorStop(0.0, 'rgba(255, 20, 0, 0.0)');
+    grad.addColorStop(0.22, 'rgba(255, 24, 0, 0.85)');
+    grad.addColorStop(0.5, 'rgba(255, 60, 20, 1.0)');
+    grad.addColorStop(0.78, 'rgba(255, 24, 0, 0.85)');
+    grad.addColorStop(1.0, 'rgba(255, 20, 0, 0.0)');
+    lCtx.fillStyle = grad;
+    lCtx.fillRect(0, 0, 1024, 128);
+
+    // Crisp bright white-hot core strip along center
+    lCtx.fillStyle = '#ffe5e0';
+    lCtx.fillRect(12, 52, 1000, 24);
+
+    // High-contrast diagonal hazard ticks along edges
+    lCtx.fillStyle = '#ffcc00';
+    for (let x = 16; x < 1008; x += 48) {
+      lCtx.fillRect(x, 22, 24, 10);
+      lCtx.fillRect(x + 12, 96, 24, 10);
+    }
+
+    const lineTex = new THREE.CanvasTexture(lineCanvas);
+    const highlightedLineMat = new THREE.MeshStandardMaterial({
+      map: lineTex,
+      emissiveMap: lineTex,
+      emissive: new THREE.Color(0xff1a00),
+      emissiveIntensity: 2.8,
+      transparent: true,
+      depthWrite: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -4,
+      polygonOffsetUnits: -4,
+      side: THREE.DoubleSide,
+    });
+    this.hazardBeaconMaterials.push(highlightedLineMat);
+
+    // Helper to lay a glowing red highlighted curb-to-curb boundary line flush on the road surface
+    const createHighlightedBoundaryLine = (
+      start: [number, number],
+      end: [number, number],
+      y: number = -0.33,
+      lineDepth: number = 0.52
+    ) => {
+      const dx = end[0] - start[0];
+      const dz = end[1] - start[1];
+      const length = Math.hypot(dx, dz);
+      const rotY = -Math.atan2(dz, dx);
+
+      const lineGeo = new THREE.PlaneGeometry(length, lineDepth);
+      lineGeo.rotateX(-Math.PI / 2);
+      const lineMesh = new THREE.Mesh(lineGeo, highlightedLineMat);
+      lineMesh.position.set((start[0] + end[0]) * 0.5, y, (start[1] + end[1]) * 0.5);
+      lineMesh.rotation.y = rotY;
+      lineMesh.renderOrder = 4;
+      blockadeGroup.add(lineMesh);
+
+      // End-cap glowing hazard bollards anchoring both curbs
+      const bollardGeo = new THREE.CylinderGeometry(0.08, 0.10, 0.42, 12);
+      const capGeo = new THREE.CylinderGeometry(0.085, 0.085, 0.10, 12);
+      for (const pt of [start, end]) {
+        const post = new THREE.Mesh(bollardGeo, barrierMat);
+        post.position.set(pt[0], y + 0.18, pt[1]);
+        blockadeGroup.add(post);
+
+        const cap = new THREE.Mesh(capGeo, beaconMat);
+        cap.position.set(pt[0], y + 0.42, pt[1]);
+        blockadeGroup.add(cap);
+      }
+    };
+
+    // Helper to create a complete realistic "WRONG WAY" barrier unit aligned curb-to-curb
     const createWrongWaySignUnit = (
       width: number,
       pos: THREE.Vector3,
@@ -630,48 +707,48 @@ export class VolcanoTrack {
       unit.rotation.y = rotY;
 
       // 1. Concrete Jersey Barrier Base
-      const baseGeo = new THREE.BoxGeometry(width, 0.75, 0.45);
+      const baseGeo = new THREE.BoxGeometry(width, 0.36, 0.28);
       const baseMesh = new THREE.Mesh(baseGeo, barrierMat);
-      baseMesh.position.set(0, 0.375, 0);
+      baseMesh.position.set(0, 0.18, 0);
       baseMesh.castShadow = false;
       baseMesh.receiveShadow = true;
       unit.add(baseMesh);
 
       // 2. Steel Crash Rails (Top & Middle)
-      const rail1 = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, width, 16), railMat);
+      const rail1 = new THREE.Mesh(new THREE.CylinderGeometry(0.032, 0.032, width, 16), railMat);
       rail1.rotation.z = Math.PI / 2;
-      rail1.position.set(0, 0.82, 0);
+      rail1.position.set(0, 0.42, 0);
       unit.add(rail1);
 
-      const rail2 = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, width, 16), railMat);
+      const rail2 = new THREE.Mesh(new THREE.CylinderGeometry(0.032, 0.032, width, 16), railMat);
       rail2.rotation.z = Math.PI / 2;
-      rail2.position.set(0, 1.05, 0);
+      rail2.position.set(0, 0.56, 0);
       unit.add(rail2);
 
       // 3. Stanchion Support Posts
-      const postGeo = new THREE.CylinderGeometry(0.04, 0.04, 0.55, 12);
+      const postGeo = new THREE.CylinderGeometry(0.03, 0.03, 0.38, 12);
       const stepX = width / 4;
       for (let i = -1.5; i <= 1.5; i += 1.0) {
         const post = new THREE.Mesh(postGeo, railMat);
-        post.position.set(i * stepX, 0.95, 0);
+        post.position.set(i * stepX, 0.50, 0);
         unit.add(post);
       }
 
       // 4. Prominent Double-Sided "WRONG WAY" Signboard
-      const signWidth = Math.min(width * 0.86, 3.8);
-      const signGeo = new THREE.BoxGeometry(signWidth, 1.05, 0.08);
+      const signWidth = Math.min(width * 0.88, 3.3);
+      const signGeo = new THREE.BoxGeometry(signWidth, 0.68, 0.06);
       const signMesh = new THREE.Mesh(signGeo, signMat);
-      signMesh.position.set(0, 1.25, 0);
+      signMesh.position.set(0, 0.78, 0);
       unit.add(signMesh);
 
       // 5. Pulsing Amber / Red Hazard Beacons
-      const beaconGeo = new THREE.CylinderGeometry(0.065, 0.065, 0.16, 12);
+      const beaconGeo = new THREE.CylinderGeometry(0.05, 0.05, 0.12, 12);
       const beaconL = new THREE.Mesh(beaconGeo, beaconMat);
-      beaconL.position.set(-signWidth * 0.45, 1.84, 0);
+      beaconL.position.set(-signWidth * 0.45, 1.18, 0);
       unit.add(beaconL);
 
       const beaconR = new THREE.Mesh(beaconGeo, beaconMat);
-      beaconR.position.set(signWidth * 0.45, 1.84, 0);
+      beaconR.position.set(signWidth * 0.45, 1.18, 0);
       unit.add(beaconR);
 
       // 6. Solid Physics Barrier Mesh for VehicleController
@@ -696,28 +773,50 @@ export class VolcanoTrack {
       blockadeGroup.add(unit);
     };
 
-    // 5 Tiered "WRONG WAY" Signs spanning across the lava canal:
-    // Tier 1 (Bottom Entrance / Road Junction):
-    createWrongWaySignUnit(5.0, new THREE.Vector3(20.60, -0.38, 14.10), 1.24);
+    // Helper to place a barrier centered across a [startX, startZ] -> [endX, endZ] curb span
+    const placeAcrossSpan = (
+      start: [number, number],
+      end: [number, number],
+      y: number,
+      extraWidth: number = 0.25
+    ) => {
+      const dx = end[0] - start[0];
+      const dz = end[1] - start[1];
+      const width = Math.hypot(dx, dz) + extraWidth;
+      const rotY = -Math.atan2(dz, dx);
+      createWrongWaySignUnit(
+        width,
+        new THREE.Vector3((start[0] + end[0]) * 0.5, y, (start[1] + end[1]) * 0.5),
+        rotY
+      );
+    };
 
-    // Tier 2 (Lower-Middle Ramp):
-    createWrongWaySignUnit(4.7, new THREE.Vector3(19.66, -0.38, 16.45), 1.22);
+    // 5 Curb-to-Curb "WRONG WAY" Signs spanning cleanly across the lava canal:
+    // Tier 1 (Bottom Entrance Mouth: Pond curb [19.05, 13.72] -> Volcano curb [22.25, 14.50]):
+    placeAcrossSpan([19.05, 13.72], [22.25, 14.50], -0.38, 0.25);
+    // Glowing red highlighted boundary line slightly forward on the road threshold:
+    createHighlightedBoundaryLine([18.88, 13.46], [22.42, 14.32], -0.33, 0.52);
 
-    // Tier 3 (Center of Ramp):
-    createWrongWaySignUnit(4.5, new THREE.Vector3(18.73, -0.38, 18.80), 1.20);
+    // Tier 2 (Lower-Middle Canal):
+    placeAcrossSpan([18.60, 16.12], [21.25, 16.78], -0.38, 0.25);
 
-    // Tier 4 (Upper-Middle Ramp):
-    createWrongWaySignUnit(4.7, new THREE.Vector3(17.79, -0.38, 21.15), 1.17);
+    // Tier 3 (Center Canal):
+    placeAcrossSpan([17.75, 18.68], [20.00, 19.53], -0.32, 0.35);
 
-    // Tier 5 (Top Entrance / Mountain Junction):
-    createWrongWaySignUnit(5.0, new THREE.Vector3(16.85, -0.38, 23.50), 1.15);
+    // Tier 4 (Upper-Middle Canal):
+    placeAcrossSpan([16.75, 21.12], [18.95, 22.20], -0.35, 0.35);
 
-    // Heavy Interior Lava Zone Solid Blocker Volume (Ensures zero penetration across the entire ramp)
-    const lavaColGeo = new THREE.BoxGeometry(4.4, 4.0, 10.2);
+    // Tier 5 (Top Entrance Mouth: Pond curb [15.45, 21.65] -> Volcano curb [17.55, 24.85]):
+    placeAcrossSpan([15.45, 21.65], [17.55, 24.85], -0.38, 0.25);
+    // Glowing red highlighted boundary line slightly forward on the upper road threshold:
+    createHighlightedBoundaryLine([15.22, 21.78], [17.34, 25.02], -0.33, 0.52);
+
+    // Heavy Interior Lava Zone Solid Blocker Volume (Aligned along the canal axis)
+    const lavaColGeo = new THREE.BoxGeometry(3.0, 4.0, 9.6);
     const lavaColMat = new THREE.MeshBasicMaterial({ visible: false, depthWrite: false });
     const lavaColMesh = new THREE.Mesh(lavaColGeo, lavaColMat);
-    lavaColMesh.position.set(18.7, 1.6, 18.8);
-    lavaColMesh.rotation.y = 1.14;
+    lavaColMesh.position.set(18.6, 1.6, 18.7);
+    lavaColMesh.rotation.y = -0.40;
     lavaColMesh.updateMatrixWorld(true);
     lavaColGeo.computeBoundingBox();
     lavaColGeo.computeBoundingSphere();

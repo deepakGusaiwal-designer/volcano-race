@@ -210,7 +210,7 @@ export class NitroPickupManager {
           bottle.active = false;
           bottle.mesh.visible = false;
           bottle.cooldownTimer = 7.5;
-          ai.isBoosting = true;
+          ai.activateBoost(2.8, 22);
           particleManager.spawnNitroCollectFlash(bottle.mesh.position);
           soundEffects.playBoost();
           break;

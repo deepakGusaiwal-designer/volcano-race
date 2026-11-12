@@ -8,9 +8,15 @@ export interface AICarConfig {
   name: string;
   modelType: 'iridium' | 'rd09' | 'mazda';
   colorHex: number;
-  laneOffset: number; // Lateral offset from center line (-0.75m to +0.75m)
-  skillMultiplier: number; // 0.92 to 1.05
+  laneOffset: number; // Lateral offset from center line (-0.5m to +0.5m)
+  skillMultiplier: number; // Competitive pace factor (~1.00 to 1.10)
   gridSlot: number; // 1, 2, 3
+}
+
+export interface ObstacleCarInfo {
+  id: string;
+  position: THREE.Vector3;
+  speedKmH: number;
 }
 
 export class AICarController {
@@ -68,8 +74,11 @@ export class AICarController {
   private smoothedLaneOffset: number;
   private bodyRollAngle = 0;
   private boostTimer = 0;
-  private nextBoostTime = 8 + Math.random() * 12;
+  private boostRemaining = 0;
+  private nextBoostTime = 1.5;
   private hasPassedMidpoint = false;
+  private overtakeSide = 0;
+  private overtakeCooldown = 0;
 
   constructor(
     scene: THREE.Scene,
@@ -201,36 +210,44 @@ export class AICarController {
     this.splineLength = spline.getLength();
   }
 
-  setSpawn(gridSlot: number, direction: 'normal' | 'reverse' = 'reverse') {
-    const startX = -7.26;
-    const startZ = 10.61;
-    const rowOffset = gridSlot * 3.2; // 3.2m spacing per grid row
-    const lateralSide = gridSlot % 2 === 1 ? 0.65 : -0.65; // Stagger left/right lane
+  setSpawn(gridSlot: number, _direction: 'normal' | 'reverse' = 'reverse') {
+    // Spawn directly behind the start/finish line along the true centered spline
+    const rowBackMeters = gridSlot * 1.85;
+    const uSpawn = (1.0 - rowBackMeters / Math.max(10, this.splineLength)) % 1.0;
+    const pt = this.trackSpline.getPointAt(uSpawn);
+    const tangent = this.trackSpline.getTangentAt(uSpawn).normalize();
+    const trackNormal = new THREE.Vector3(-tangent.z, 0, tangent.x).normalize();
+    const lateralSide = gridSlot % 2 === 1 ? 0.42 : -0.42;
 
-    if (direction === 'reverse') {
-      // In reverse mode: Face -X (heading = Math.PI / 2), cars staggered along +X behind start line
-      this.position.set(startX + rowOffset, 0.1, startZ + lateralSide);
-      this.currentHeading = Math.PI / 2;
-    } else {
-      // In normal mode: Face +X (heading = -Math.PI / 2), cars staggered along -X behind start line
-      this.position.set(startX - rowOffset, 0.1, startZ + lateralSide);
-      this.currentHeading = -Math.PI / 2;
-    }
+    this.position.set(
+      pt.x + trackNormal.x * lateralSide,
+      pt.y + 0.04,
+      pt.z + trackNormal.z * lateralSide
+    );
+    this.currentHeading = Math.atan2(-tangent.x, -tangent.z);
 
     this.speedKmH = 0;
     this.velocity.set(0, 0, 0);
+    this.verticalVelocity = 0;
+    this.grounded = true;
+    this.airTime = 0;
+    this.lastTargetY = this.position.y;
     this.currentLap = 1;
     this.hasPassedMidpoint = false;
     this.isBoosting = false;
     this.boostTimer = 0;
-    this.nextBoostTime = 6 + Math.random() * 8;
+    this.boostRemaining = 0;
+    // Trigger competitive opening battle boost shortly after green flag
+    this.nextBoostTime = 1.1 + gridSlot * 0.45 + Math.random() * 0.6;
     this.currentLaneOffset = this.config.laneOffset;
-    this.smoothedLaneOffset = this.config.laneOffset;
+    this.smoothedLaneOffset = lateralSide;
+    this.overtakeSide = 0;
+    this.overtakeCooldown = 0;
     this.bodyRollAngle = 0;
+    this.steerAngle = 0;
 
     // Initialize progress U along spline
-    this.progressU = this.findNearestU(this.position);
-    // If spawned just behind the start line (U ~ 0.95-0.99), effective lap 1 progress is progressU - 1.0 (sub-zero)
+    this.progressU = uSpawn;
     const normalizedProgress = this.progressU > 0.85 ? this.progressU - 1.0 : this.progressU;
     this.totalProgress = 1.0 + normalizedProgress;
 
@@ -243,6 +260,20 @@ export class AICarController {
     this.rotMatrix.makeBasis(this.rightVec, this.surfaceNormal, this.localZ);
     this.mesh.quaternion.setFromRotationMatrix(this.rotMatrix);
     this.quaternion.copy(this.mesh.quaternion);
+  }
+
+  public activateBoost(duration: number = 2.6, instantKickKmH: number = 22) {
+    this.isBoosting = true;
+    this.boostRemaining = Math.max(this.boostRemaining, duration);
+    if (this.speedKmH > 20) {
+      const maxBoost = 250 * this.config.skillMultiplier;
+      this.speedKmH = Math.min(maxBoost, this.speedKmH + instantKickKmH);
+    } else {
+      this.speedKmH = Math.max(this.speedKmH, 68);
+    }
+    const fwdKickMs = (instantKickKmH * 1000 / 3600) * this.carScale;
+    this.velocity.x += -Math.sin(this.currentHeading) * fwdKickMs;
+    this.velocity.z += -Math.cos(this.currentHeading) * fwdKickMs;
   }
 
   applyCollisionImpulse(impulse: THREE.Vector3, impactPoint: THREE.Vector3) {
@@ -265,11 +296,11 @@ export class AICarController {
   private findNearestU(pos: THREE.Vector3): number {
     let bestU = 0;
     let minDist = Infinity;
-    const samples = 100;
+    const samples = 240;
     for (let i = 0; i < samples; i++) {
       const u = i / samples;
       const pt = this.trackSpline.getPointAt(u);
-      const d = pt.distanceTo(pos);
+      const d = Math.hypot(pt.x - pos.x, pt.z - pos.z);
       if (d < minDist) {
         minDist = d;
         bestU = u;
@@ -278,12 +309,22 @@ export class AICarController {
     return bestU;
   }
 
+  private sampleSplineCurvature(uStart: number, uEnd: number): number {
+    const t0 = this.trackSpline.getTangentAt((uStart + 1.0) % 1.0);
+    const t1 = this.trackSpline.getTangentAt((uEnd + 1.0) % 1.0);
+    const angle = Math.acos(THREE.MathUtils.clamp(t0.x * t1.x + t0.z * t1.z, -1, 1));
+    const du = Math.abs(uEnd - uStart);
+    const arcDist = Math.max(0.5, du * this.splineLength);
+    return angle / arcDist; // rad per meter (1 / radius)
+  }
+
   update(
     delta: number,
     colliders: THREE.Object3D[],
-    playerPos: THREE.Vector3,
+    _playerPos: THREE.Vector3,
     playerTotalProgress?: number,
-    onPlayerHit?: (impulseSpeed: number) => void
+    otherCars?: ObstacleCarInfo[],
+    _onPlayerHit?: (impulseSpeed: number) => void
   ) {
     const dt = Math.min(delta, 0.05);
 
@@ -297,13 +338,23 @@ export class AICarController {
       return;
     }
 
-    // 1. Advance Spline Position U
+    // 1. Sub-Decimeter Spline Position U Tracking (2D XZ prevents vertical bias & S-curve jumping)
     let bestU = this.progressU;
     let minDist = Infinity;
-    for (let du = -0.005; du <= 0.030; du += 0.001) {
+    for (let du = -0.004; du <= 0.025; du += 0.001) {
       const testU = (this.progressU + du + 1.0) % 1.0;
       const pt = this.trackSpline.getPointAt(testU);
-      const d = pt.distanceTo(this.position);
+      const d = Math.hypot(pt.x - this.position.x, pt.z - this.position.z);
+      if (d < minDist) {
+        minDist = d;
+        bestU = testU;
+      }
+    }
+    // Fine local search (~5cm resolution) eliminates quantized steering jitter
+    for (let du = -0.0015; du <= 0.0015; du += 0.00015) {
+      const testU = (bestU + du + 1.0) % 1.0;
+      const pt = this.trackSpline.getPointAt(testU);
+      const d = Math.hypot(pt.x - this.position.x, pt.z - this.position.z);
       if (d < minDist) {
         minDist = d;
         bestU = testU;
@@ -327,141 +378,177 @@ export class AICarController {
       : this.progressU;
     this.totalProgress = this.currentLap + normalizedProgress;
 
-    // 2. Curvature-Aware Adaptive Lookahead Navigation
-    const currentTangent = this.trackSpline.getTangentAt(this.progressU);
-    const aheadTangent = this.trackSpline.getTangentAt((this.progressU + 0.025) % 1.0);
-    const trackCurvature = 1.0 - Math.max(0, currentTangent.dot(aheadTangent));
+    // 2. Multi-Horizon Curvature & Pure-Pursuit Navigation
+    const nearCurvature = Math.max(
+      this.sampleSplineCurvature(this.progressU, this.progressU + 0.008),
+      this.sampleSplineCurvature(this.progressU + 0.004, this.progressU + 0.015)
+    );
+    const brakeCurvature = Math.max(
+      nearCurvature,
+      this.sampleSplineCurvature(this.progressU + 0.012, this.progressU + 0.026),
+      this.sampleSplineCurvature(this.progressU + 0.024, this.progressU + 0.044)
+    );
 
-    const lookaheadDist = THREE.MathUtils.lerp(
-      THREE.MathUtils.clamp(this.speedKmH * 0.058, 3.5, 11.5),
-      2.8,
-      Math.min(1.0, trackCurvature * 2.2)
+    // Short corner-hugging lookahead (1.5m - 4.3m) eliminates cutting corners / jumping curbs
+    const speedNorm = THREE.MathUtils.clamp(this.speedKmH / 230, 0, 1);
+    const straightLookahead = THREE.MathUtils.lerp(1.9, 4.3, speedNorm);
+    const sharpFactor = THREE.MathUtils.clamp((nearCurvature - 0.04) / 0.16, 0, 1);
+    const lookaheadDist = THREE.MathUtils.clamp(
+      THREE.MathUtils.lerp(straightLookahead, 1.55, sharpFactor),
+      1.5,
+      4.3
     );
 
     const targetU = (this.progressU + lookaheadDist / this.splineLength) % 1.0;
     const targetPt = this.trackSpline.getPointAt(targetU);
     const tangent = this.trackSpline.getTangentAt(targetU).normalize();
-    const trackNormal = new THREE.Vector3(-tangent.z, 0, tangent.x);
+    const trackNormal = new THREE.Vector3(-tangent.z, 0, tangent.x).normalize();
 
-    // Initial heading estimation
-    const dx = targetPt.x - this.position.x;
-    const dz = targetPt.z - this.position.z;
-    const rawHeading = Math.atan2(-dx, -dz);
-    let rawAngleDiff = rawHeading - this.currentHeading;
-    while (rawAngleDiff > Math.PI) rawAngleDiff -= Math.PI * 2;
-    while (rawAngleDiff < -Math.PI) rawAngleDiff += Math.PI * 2;
-
-    // Adaptive lane offset: in tight corners and hairpins, smoothly converge to racing line
-    let effectiveLaneOffset = this.currentLaneOffset;
-    const curveTightness = Math.max(trackCurvature * 1.5, Math.abs(rawAngleDiff));
-    if (curveTightness > 0.18) {
-      effectiveLaneOffset *= Math.max(0.08, 1.0 - (curveTightness - 0.18) * 2.5);
-    }
-    // Force center offset across jump platform ramp
-    if (this.position.x > -4.0 && this.position.x < 8.0 && this.position.z > 8.0 && this.position.z < 13.0) {
-      effectiveLaneOffset = 0.0;
+    // Overtake detection: check if a slower racer is blocking directly ahead
+    if (this.overtakeCooldown > 0) {
+      this.overtakeCooldown -= dt;
+    } else {
+      this.overtakeSide = 0;
     }
 
-    // Smooth lane offset transition so AI never abruptly side-shifts or weaves
-    this.smoothedLaneOffset += (effectiveLaneOffset - this.smoothedLaneOffset) * Math.min(1, dt * 2.5);
+    if (otherCars && this.speedKmH > 50 && nearCurvature < 0.14) {
+      const fwdX = -Math.sin(this.currentHeading);
+      const fwdZ = -Math.cos(this.currentHeading);
+      const rightX = -fwdZ;
+      const rightZ = fwdX;
 
+      for (const other of otherCars) {
+        if (other.id === this.id) continue;
+        const ox = other.position.x - this.position.x;
+        const oz = other.position.z - this.position.z;
+        const ahead = ox * fwdX + oz * fwdZ;
+        const side = ox * rightX + oz * rightZ;
+        if (ahead > 0.3 && ahead < 3.4 && Math.abs(side) < 0.45 && other.speedKmH < this.speedKmH + 18) {
+          // Pick passing lane away from the blocking car (clamped inside safe asphalt width)
+          this.overtakeSide = side >= 0 ? -0.52 : 0.52;
+          this.overtakeCooldown = 0.85;
+          break;
+        }
+      }
+    }
+
+    // Adaptive lane offset: converge cleanly toward centerline through corners, shift smoothly when overtaking
+    let effectiveLaneOffset = this.overtakeSide !== 0 ? this.overtakeSide : this.currentLaneOffset;
+    if (sharpFactor > 0.15) {
+      effectiveLaneOffset *= THREE.MathUtils.lerp(1.0, 0.15, sharpFactor);
+    }
+    effectiveLaneOffset = THREE.MathUtils.clamp(effectiveLaneOffset, -0.55, 0.55);
+
+    this.smoothedLaneOffset += (effectiveLaneOffset - this.smoothedLaneOffset) * Math.min(1, dt * 4.5);
     targetPt.addScaledVector(trackNormal, this.smoothedLaneOffset);
 
-    // Recompute steering angle towards final offset target point
+    // Pure-Pursuit Heading & Yaw Control
     const fdx = targetPt.x - this.position.x;
     const fdz = targetPt.z - this.position.z;
+    const distToTarget = Math.max(0.8, Math.hypot(fdx, fdz));
     const finalDesiredHeading = Math.atan2(-fdx, -fdz);
     let finalAngleDiff = finalDesiredHeading - this.currentHeading;
     while (finalAngleDiff > Math.PI) finalAngleDiff -= Math.PI * 2;
     while (finalAngleDiff < -Math.PI) finalAngleDiff += Math.PI * 2;
 
-    const maxSteer = 0.58;
-    const targetSteer = THREE.MathUtils.clamp(finalAngleDiff * 2.0, -maxSteer, maxSteer);
-    this.steerAngle += (targetSteer - this.steerAngle) * Math.min(1, dt * 7.5);
+    const maxSteer = 0.72;
+    const targetSteer = THREE.MathUtils.clamp(finalAngleDiff * 2.4, -maxSteer, maxSteer);
+    this.steerAngle += (targetSteer - this.steerAngle) * Math.min(1, dt * 14.0);
 
-    const speedRatio = Math.min(1.0, Math.abs(this.speedKmH) / 8);
-    const turnMultiplier = THREE.MathUtils.lerp(3.2, 4.8, Math.min(1.0, Math.abs(finalAngleDiff) * 1.6));
-    this.currentHeading += this.steerAngle * dt * speedRatio * turnMultiplier;
+    const speedMsRaw = (this.speedKmH * 1000 / 3600) * this.carScale;
+    const purePursuitYaw = speedMsRaw * (2.0 * Math.sin(finalAngleDiff) / distToTarget);
+    const correctiveYaw = finalAngleDiff * THREE.MathUtils.lerp(2.2, 4.2, Math.min(1.0, Math.abs(finalAngleDiff) * 2.0));
+    const speedRatio = Math.min(1.0, Math.abs(this.speedKmH) / 6.0);
+    this.currentHeading += (purePursuitYaw + correctiveYaw) * 0.65 * dt * speedRatio;
 
-    // 3. Nitro Boost AI Trigger
-    this.boostTimer += dt;
-    if (this.boostTimer >= this.nextBoostTime) {
-      // Boost on clear straights to challenge and pressure the player
-      const isAheadOfPlayer = playerTotalProgress !== undefined && (this.totalProgress > playerTotalProgress + 0.08);
-      if (trackCurvature < 0.07 && Math.abs(finalAngleDiff) < 0.16 && this.speedKmH > 70 && !isAheadOfPlayer) {
-        this.isBoosting = true;
-        if (this.boostTimer >= this.nextBoostTime + 2.2) {
-          this.isBoosting = false;
-          this.boostTimer = 0;
-          this.nextBoostTime = 8 + Math.random() * 8;
-        }
+    // 3. Tactical Nitro Boost System (Launch surge, straights, corner exits & catch-up)
+    const isTrailing = playerTotalProgress !== undefined && this.totalProgress < playerTotalProgress - 0.015;
+    const farAhead = playerTotalProgress !== undefined && this.totalProgress > playerTotalProgress + 0.25;
+
+    if (this.boostRemaining > 0) {
+      this.boostRemaining -= dt;
+      this.isBoosting = true;
+      if (this.boostRemaining <= 0) {
+        this.isBoosting = false;
+        this.boostTimer = 0;
+        this.nextBoostTime = isTrailing ? (3.2 + Math.random() * 2.8) : (5.2 + Math.random() * 4.2);
+      }
+    } else {
+      this.isBoosting = false;
+      this.boostTimer += dt;
+      if (
+        this.boostTimer >= this.nextBoostTime &&
+        nearCurvature < 0.065 &&
+        Math.abs(finalAngleDiff) < 0.16 &&
+        this.speedKmH > 55 &&
+        !farAhead
+      ) {
+        this.activateBoost(2.4 + Math.random() * 0.6, 18);
       }
     }
 
-    // 4. Speed, Curvature & Braking Physics: Matched to player car performance (~170 - 185 km/h)
-    let targetSpeed = 175 * this.config.skillMultiplier;
+    // 4. Competitive Speed, Cornering & Acceleration Physics
+    let targetSpeed = 198 * this.config.skillMultiplier;
     if (this.isBoosting) {
-      targetSpeed = 220 * this.config.skillMultiplier;
+      targetSpeed = 245 * this.config.skillMultiplier;
     }
 
-    // Dynamic Cornering Slowdown: rivals realistically brake for bends while retaining racing momentum
-    const curveIntensity = Math.max(trackCurvature * 2.5, (Math.abs(finalAngleDiff) - 0.12) * 2.2);
-    if (curveIntensity > 0.06) {
-      const slowRatio = Math.min(1.0, (curveIntensity - 0.06) * 1.8);
-      const cornerTarget = THREE.MathUtils.lerp(150, 105, slowRatio) * this.config.skillMultiplier;
-      targetSpeed = Math.min(targetSpeed, cornerTarget);
+    // Physically grounded cornering speed from max lateral acceleration (takes sweepers flat out!)
+    const effectiveCurv = Math.max(brakeCurvature, Math.abs(finalAngleDiff) * 0.22);
+    if (effectiveCurv > 0.055) {
+      const latGrip = 5.9 * Math.min(1.12, this.config.skillMultiplier);
+      const speedFromCurv = (Math.sqrt(latGrip / effectiveCurv) / this.carScale) * 3.6;
+      const cornerFloor = 118 * this.config.skillMultiplier;
+      targetSpeed = Math.min(targetSpeed, Math.max(cornerFloor, speedFromCurv));
     }
 
-    // Dynamic Race Balancing (Rubber-banding): keeps racing close, intense, and competitive
+    // Dynamic Race Balancing: fierce pursuit when trailing, strong defense when leading
     if (playerTotalProgress !== undefined) {
       const progressDiff = this.totalProgress - playerTotalProgress;
-      if (progressDiff > 0.035) {
-        // AI is leading ahead: slight modulation so player can chase and battle
-        const leadRatio = Math.min(1.0, (progressDiff - 0.035) / 0.08);
-        const catchupFactor = THREE.MathUtils.lerp(1.0, 0.92, leadRatio);
-        targetSpeed *= catchupFactor;
-      } else if (progressDiff < -0.015) {
-        // AI is trailing: stay competitive and attack to challenge player
-        const trailRatio = Math.min(1.0, (-progressDiff - 0.015) / 0.08);
-        const pressureFactor = THREE.MathUtils.lerp(1.0, 1.12, trailRatio);
-        targetSpeed *= pressureFactor;
+      if (progressDiff > 0.10) {
+        // Gentle cap only if far ahead (> ~33m) so races stay exciting without gifting P1
+        const leadRatio = Math.min(1.0, (progressDiff - 0.10) / 0.18);
+        targetSpeed *= THREE.MathUtils.lerp(1.0, 0.95, leadRatio);
+      } else if (progressDiff < -0.01) {
+        // Strong catch-up surge so dropped rivals hunt down the player
+        const trailRatio = Math.min(1.0, (-progressDiff - 0.01) / 0.07);
+        targetSpeed *= THREE.MathUtils.lerp(1.02, 1.22, trailRatio);
       }
     }
 
     if (this.speedKmH < targetSpeed) {
-      // Aggressive sports-car acceleration matched to player car
-      const baseAccel = (this.isBoosting ? 92 : 62) * this.config.skillMultiplier;
+      const baseAccel = (this.isBoosting ? 136 : 90) * this.config.skillMultiplier;
       const currentRatio = Math.min(1.0, Math.max(0, this.speedKmH) / (targetSpeed + 5));
-      const accel = baseAccel * Math.max(0.35, 1.0 - currentRatio * 0.65);
+      const accel = baseAccel * Math.max(0.42, 1.0 - currentRatio * 0.58);
       this.speedKmH += accel * dt;
     } else {
-      const brake = 75;
+      const brake = 155;
       this.speedKmH = Math.max(targetSpeed, this.speedKmH - brake * dt);
     }
 
-    // 5. Movement in XZ plane with lateral grip traction
+    // 5. Movement in XZ plane with crisp lateral grip
     const speedMs = (this.speedKmH * 1000 / 3600) * this.carScale;
     const desiredVelX = -Math.sin(this.currentHeading) * speedMs;
     const desiredVelZ = -Math.cos(this.currentHeading) * speedMs;
 
-    this.velocity.x += (desiredVelX - this.velocity.x) * Math.min(1, dt * 14.0);
-    this.velocity.z += (desiredVelZ - this.velocity.z) * Math.min(1, dt * 14.0);
+    this.velocity.x += (desiredVelX - this.velocity.x) * Math.min(1, dt * 20.0);
+    this.velocity.z += (desiredVelZ - this.velocity.z) * Math.min(1, dt * 20.0);
 
     this.position.x += this.velocity.x * dt;
     this.position.z += this.velocity.z * dt;
 
-    // Strict boundary enforcement: AI cars can NEVER enter or drive on the blocked lava road
+    // Strict boundary enforcement: AI cars can NEVER enter or drive on the blocked lava canal
     if (
-      this.position.x >= 17.0 &&
-      this.position.x <= 21.5 &&
-      this.position.z >= 15.5 &&
-      this.position.z <= 22.0
+      this.position.x >= 16.5 &&
+      this.position.x <= 21.8 &&
+      this.position.z >= 14.8 &&
+      this.position.z <= 22.8
     ) {
       const safePt = this.trackSpline.getPointAt(this.progressU);
       this.position.x = safePt.x;
       this.position.z = safePt.z;
-      this.velocity.multiplyScalar(0.4);
-      this.speedKmH = Math.min(this.speedKmH, 70);
+      this.velocity.multiplyScalar(0.5);
+      this.speedKmH = Math.min(this.speedKmH, 95);
     }
 
     // 6. Ground Raycasting & Suspension
@@ -559,21 +646,37 @@ export class AICarController {
 
     this.mesh.position.copy(this.position);
 
-    // 7. Track Corridor Guard & Recovery
+    // 7. Track Corridor Guard & Recovery (asphalt sits at y ~ -0.38, minWallDist = 1.15m)
     const targetSplinePt = this.trackSpline.getPointAt(this.progressU);
-    const distFromSpline = Math.hypot(this.position.x - targetSplinePt.x, this.position.z - targetSplinePt.z);
-    if (distFromSpline > 2.2) {
-      // Soft-guide rival car to stay within drivable track boundaries
-      const corr = Math.min(1.0, (distFromSpline - 2.2) * dt * 4.0);
-      this.position.x += (targetSplinePt.x - this.position.x) * corr;
-      this.position.z += (targetSplinePt.z - this.position.z) * corr;
+    const devX = this.position.x - targetSplinePt.x;
+    const devZ = this.position.z - targetSplinePt.z;
+    const distFromSpline = Math.hypot(devX, devZ);
+    if (distFromSpline > 0.88) {
+      // Smooth elastic curb containment keeps AI cars cleanly on asphalt & away from barriers
+      const nx = devX / distFromSpline;
+      const nz = devZ / distFromSpline;
+      const clampedDist = Math.min(distFromSpline, 1.05);
+      const pull = (distFromSpline - 0.88) * Math.min(1, dt * 10.0);
+      this.position.x -= nx * pull;
+      this.position.z -= nz * pull;
+      if (distFromSpline > 1.25) {
+        this.position.x = targetSplinePt.x + nx * clampedDist;
+        this.position.z = targetSplinePt.z + nz * clampedDist;
+      }
+      // Cancel outward velocity component so car glides parallel to road edge
+      const outwardVel = this.velocity.x * nx + this.velocity.z * nz;
+      if (outwardVel > 0) {
+        this.velocity.x -= nx * outwardVel;
+        this.velocity.z -= nz * outwardVel;
+      }
     }
-    if (distFromSpline > 3.0 || this.position.y < -0.45) {
-      // Firm recovery back onto the track
-      this.position.x += (targetSplinePt.x - this.position.x) * Math.min(1, dt * 7.5);
-      this.position.z += (targetSplinePt.z - this.position.z) * Math.min(1, dt * 7.5);
-      this.position.y = targetSplinePt.y + 0.08;
-      this.speedKmH = Math.max(120, this.speedKmH);
+    if (distFromSpline > 2.4 || this.position.y < -0.90) {
+      // Emergency recovery onto true road centerline
+      this.position.x = targetSplinePt.x;
+      this.position.z = targetSplinePt.z;
+      this.position.y = targetSplinePt.y + 0.04;
+      this.verticalVelocity = 0;
+      this.speedKmH = Math.max(135, this.speedKmH);
       this.mesh.position.copy(this.position);
     }
 

@@ -127,7 +127,7 @@ export class ForzaTrackVisuals {
     for (const h of hits) {
       if (h.face) {
         const norm = h.face.normal.clone().transformDirection(h.object.matrixWorld).normalize();
-        if (norm.y >= 0.30 && Math.abs(h.point.y - baselineY) < 1.8 && h.point.y > -0.20) {
+        if (norm.y >= 0.30 && Math.abs(h.point.y - baselineY) < 1.8 && h.point.y > -0.60) {
           return { hit: true, y: h.point.y };
         }
       }
@@ -781,7 +781,7 @@ export class ForzaTrackVisuals {
           roadHit = this.probeRoadPoint(smoothed.x, smoothed.z, pCurr.y, roadMeshes);
         }
         let y = roadHit.hit ? roadHit.y + 0.026 : pCurr.y + 0.026;
-        if (y < 0.015) y = pCurr.y + 0.026;
+        if (y < -0.65) y = pCurr.y + 0.026;
         smoothed.y = y;
       }
 

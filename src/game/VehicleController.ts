@@ -947,11 +947,14 @@ export class VehicleController {
     }
 
     // Proximity warning when approaching blocked lava road wrong way entrance:
-    const distToLowerMouth = Math.hypot(this.position.x - 20.6, this.position.z - 14.1);
-    const distToUpperMouth = Math.hypot(this.position.x - 16.85, this.position.z - 23.5);
-    if (distToLowerMouth < 6.0 || distToUpperMouth < 6.0) {
-      const headingToLower = distToLowerMouth < 6.0 && this.forwardVec.z > 0.35;
-      const headingToUpper = distToUpperMouth < 6.0 && this.forwardVec.z < -0.35;
+    const distToLowerMouth = Math.hypot(this.position.x - 20.65, this.position.z - 14.11);
+    const distToUpperMouth = Math.hypot(this.position.x - 16.50, this.position.z - 23.25);
+    if (distToLowerMouth < 5.5 || distToUpperMouth < 5.5) {
+      // Dot product with canal-entry direction (Lower: -0.23, +0.97; Upper: +0.84, -0.55)
+      const headingToLower =
+        distToLowerMouth < 5.5 && (-0.23 * this.forwardVec.x + 0.97 * this.forwardVec.z) > 0.45;
+      const headingToUpper =
+        distToUpperMouth < 5.5 && (0.84 * this.forwardVec.x - 0.55 * this.forwardVec.z) > 0.45;
       if (headingToLower || headingToUpper) {
         useGameStore.getState().setNotification('⛔ WRONG WAY! DO NOT ENTER! ⛔');
       }
