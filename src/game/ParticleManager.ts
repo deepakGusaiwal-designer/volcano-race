@@ -306,6 +306,11 @@ export class ParticleManager {
     this.dynamicGeometry.setDrawRange(0, count);
   }
 
+  reset() {
+    this.dynamicParticles = [];
+    this.dynamicGeometry.setDrawRange(0, 0);
+  }
+
   dispose() {
     this.scene.remove(this.dynamicPoints);
     this.dynamicGeometry.dispose();

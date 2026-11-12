@@ -174,7 +174,10 @@ export class VehicleController {
         e.preventDefault();
       }
       if (e.code === 'KeyR' || k === 'r') {
-        this.respawn();
+        const gStore = useGameStore.getState();
+        if (gStore.gameState === 'racing' && !gStore.paused) {
+          this.respawn();
+        }
       }
     });
 
@@ -337,6 +340,15 @@ export class VehicleController {
     });
   }
 
+  clearInput() {
+    this.input.forward = false;
+    this.input.backward = false;
+    this.input.left = false;
+    this.input.right = false;
+    this.input.handbrake = false;
+    this.input.boost = false;
+  }
+
   setSpawn(pos: THREE.Vector3, heading: number = -Math.PI / 2) {
     this.position.copy(pos);
     this.currentHeading = heading;
@@ -347,12 +359,25 @@ export class VehicleController {
     this.velocity.set(0, 0, 0);
     this.speedKmH = 0;
     this.verticalVelocity = 0;
+    this.lastTargetY = pos.y;
+    this.grounded = true;
+    this.airTime = 0;
+    this.currentAirDuration = 0;
+    this.currentDriftDuration = 0;
     this.rpm = 1000;
+    this.gear = 1;
     this.driftAngle = 0;
     this.steerAngle = 0;
     this.yawVelocity = 0;
     this.bodyRollAngle = 0;
     this.nitro = 100;
+    this.asphaltNitroTimer = 0;
+    this.isAsphaltSurging = false;
+    this.isBoosting = false;
+    this.isDrifting = false;
+    this.isBraking = false;
+    this.lastBoostState = false;
+    this.respawnCooldown = 0;
     this.surfaceNormal.set(0, 1, 0);
 
     // Initial orientation: Nose along heading, Up along world Y

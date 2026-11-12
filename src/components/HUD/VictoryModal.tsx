@@ -15,9 +15,10 @@ import { soundEffects } from '../../audio/SoundEffects';
 
 interface VictoryModalProps {
   onRestart: () => void;
+  onReturnToGrid: () => void;
 }
 
-export const VictoryModal: React.FC<VictoryModalProps> = ({ onRestart }) => {
+export const VictoryModal: React.FC<VictoryModalProps> = ({ onRestart, onReturnToGrid }) => {
   const gameState = useGameStore((state) => state.gameState);
   const finished = useGameStore((state) => state.finished);
   const racePosition = useGameStore((state) => state.racePosition || 1);
@@ -28,9 +29,8 @@ export const VictoryModal: React.FC<VictoryModalProps> = ({ onRestart }) => {
   const driverProfile = useGameStore((state) => state.driverProfile);
   const toggleCarSelect = useGameStore((state) => state.toggleCarSelect);
   const setCareerModalOpen = useGameStore((state) => state.setCareerModalOpen);
-  const setGameState = useGameStore((state) => state.setGameState);
 
-  // Close / Restart on Enter, Space, or R
+  // Restart race cleanly with fresh countdown on Enter, Space, or R
   useEffect(() => {
     if (gameState !== 'victory' && !finished) return;
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -38,12 +38,11 @@ export const VictoryModal: React.FC<VictoryModalProps> = ({ onRestart }) => {
         e.preventDefault();
         soundEffects.playCoin();
         onRestart();
-        setGameState('welcome');
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [gameState, finished, onRestart, setGameState]);
+  }, [gameState, finished, onRestart]);
 
   if (gameState !== 'victory' && !finished) return null;
 
@@ -57,14 +56,12 @@ export const VictoryModal: React.FC<VictoryModalProps> = ({ onRestart }) => {
     e.stopPropagation();
     soundEffects.playCoin();
     onRestart();
-    setGameState('countdown');
   };
 
   const handleReturnToGrid = (e: React.MouseEvent) => {
     e.stopPropagation();
     soundEffects.playClick();
-    onRestart();
-    setGameState('welcome');
+    onReturnToGrid();
   };
 
   const handleGarageClick = (e: React.MouseEvent) => {

@@ -38,16 +38,21 @@ export const PauseModal: React.FC<PauseModalProps> = ({
 
   const shouldShow = paused || isPauseOpen;
 
-  // Close on Escape or P
+  // Close on Escape/P, or restart on R
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.code === 'Escape' || e.code === 'KeyP') && shouldShow) {
+      if (!shouldShow) return;
+      if (e.code === 'Escape' || e.code === 'KeyP') {
         onResume();
+      } else if (e.code === 'KeyR' || e.key.toLowerCase() === 'r') {
+        e.preventDefault();
+        soundEffects.playClick();
+        onRestart();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [shouldShow, onResume]);
+  }, [shouldShow, onResume, onRestart]);
 
   if (!shouldShow) return null;
 

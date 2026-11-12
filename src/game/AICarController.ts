@@ -245,6 +245,11 @@ export class AICarController {
     this.overtakeCooldown = 0;
     this.bodyRollAngle = 0;
     this.steerAngle = 0;
+    this.wheelSpinAngle = 0;
+    if (this.wheelLF) this.wheelLF.quaternion.copy(this.initialQuatLF);
+    if (this.wheelRF) this.wheelRF.quaternion.copy(this.initialQuatRF);
+    if (this.wheelLR) this.wheelLR.quaternion.copy(this.initialQuatLR);
+    if (this.wheelRR) this.wheelRR.quaternion.copy(this.initialQuatRR);
 
     // Initialize progress U along spline
     this.progressU = uSpawn;

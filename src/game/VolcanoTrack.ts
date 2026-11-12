@@ -951,6 +951,15 @@ export class VolcanoTrack {
     });
   }
 
+  reset() {
+    this.resetCoins();
+    this.prevHint = null;
+    this.lastHintTime = 0;
+    for (const marker of this.checkpointMarkers) {
+      marker.scale.set(1, 1, 1);
+    }
+  }
+
   dispose() {
     this.checkpointMarkers.forEach((m) => {
       this.scene.remove(m);

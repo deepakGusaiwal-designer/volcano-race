@@ -50,6 +50,7 @@ export class GameEngine {
   private isFinished = false;
   private welcomeAngle = 0;
   private countdownTimer: number | null = null;
+  private countdownClearTimeout: number | null = null;
 
   // FPS & Performance Profiling
   private frameCount = 0;
@@ -204,10 +205,14 @@ export class GameEngine {
     soundEffects.init();
     soundEffects.resume();
 
-    // 1. Clear any active countdown timer
+    // 1. Clear any active countdown timer or pending GO banner clear timeout
     if (this.countdownTimer !== null) {
       clearInterval(this.countdownTimer);
       this.countdownTimer = null;
+    }
+    if (this.countdownClearTimeout !== null) {
+      clearTimeout(this.countdownClearTimeout);
+      this.countdownClearTimeout = null;
     }
 
     // 2. Lock player car and AI rivals in their exact starting grid spots
@@ -249,9 +254,10 @@ export class GameEngine {
         this.raceStartTime = performance.now();
         this.lapStartTime = performance.now();
 
-        setTimeout(() => {
+        this.countdownClearTimeout = window.setTimeout(() => {
           store.setCountdownValue(null);
           store.setIsPerfectLaunch(false);
+          this.countdownClearTimeout = null;
         }, 1200);
       }
     }, 1000);
@@ -395,27 +401,55 @@ export class GameEngine {
   }
 
   setTrackDirection(dir: 'normal' | 'reverse') {
+    const prevState = useGameStore.getState().gameState;
     this.track.setTrackDirection(dir);
     this.competitionManager.setTrackDirection(dir);
     useGameStore.getState().setTrackDirection(dir);
-    this.resetRace();
+    if (prevState === 'welcome') {
+      this.resetRace();
+    } else {
+      this.restartRaceCountdown();
+    }
     useGameStore.getState().setNotification(`Track Mode: ${dir === 'reverse' ? 'REVERSE CIRCUIT 🔄' : 'CLASSIC CIRCUIT 🏎️'}`);
   }
 
   resetRace() {
+    if (this.countdownTimer !== null) {
+      clearInterval(this.countdownTimer);
+      this.countdownTimer = null;
+    }
+    if (this.countdownClearTimeout !== null) {
+      clearTimeout(this.countdownClearTimeout);
+      this.countdownClearTimeout = null;
+    }
+    try {
+      confetti.reset();
+    } catch {
+      // ignore if canvas not initialized
+    }
+
     this.currentLap = 1;
     this.currentCheckpointIdx = 0;
+    this.currentLapTime = 0;
+    this.bestLapTime = null;
+    this.totalRaceTime = 0;
     this.lapStartTime = performance.now();
     this.raceStartTime = performance.now();
     this.isFinished = false;
+    this.welcomeAngle = 0;
+
+    this.vehicle.clearInput();
     this.vehicle.setSpawn(this.track.spawnPosition, this.track.spawnHeading);
     this.competitionManager.resetGrid(this.track.trackDirection);
     this.skidmarkManager.reset();
     this.lightTrailManager.reset();
+    this.particleManager.reset();
     this.followCamera.resetZoom();
-    this.track.resetCoins();
+    this.cinematicDirector.reset();
+    this.track.reset();
     this.nitroPickupManager.resetAll();
     this.hotWheelsPickupManager.resetAll();
+    soundEffects.updateEngine(1000, 0, false, false);
     useGameStore.getState().resetRace();
     useGameStore.getState().setNotification(`Race Reset! Mode: ${this.track.trackDirection.toUpperCase()} 🏁`);
   }
@@ -423,6 +457,11 @@ export class GameEngine {
   restartRaceCountdown() {
     this.resetRace();
     this.startRaceCountdown();
+  }
+
+  returnToStartingGrid() {
+    this.resetRace();
+    useGameStore.getState().setGameState('welcome');
   }
 
   setCarPaint(hexColor: string) {
@@ -665,6 +704,10 @@ export class GameEngine {
     if (this.countdownTimer !== null) {
       clearInterval(this.countdownTimer);
       this.countdownTimer = null;
+    }
+    if (this.countdownClearTimeout !== null) {
+      clearTimeout(this.countdownClearTimeout);
+      this.countdownClearTimeout = null;
     }
     if (this.animationFrameId) {
       cancelAnimationFrame(this.animationFrameId);

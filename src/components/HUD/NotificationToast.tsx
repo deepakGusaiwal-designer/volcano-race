@@ -14,6 +14,9 @@ export const NotificationToast: React.FC = () => {
         setVisible(false);
       }, 2400);
       return () => clearTimeout(timer);
+    } else {
+      setVisible(false);
+      setCurrentText('');
     }
   }, [notification]);
 

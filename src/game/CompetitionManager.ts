@@ -231,6 +231,8 @@ export class CompetitionManager {
 
   resetGrid(direction: 'normal' | 'reverse' = this.trackDirection) {
     this.hasInitialPlayerU = false;
+    this.lastPlayerU = 0;
+    this.lastReportedRank = -1;
     for (const car of this.aiCars) {
       car.setSpawn(car.config.gridSlot, direction);
     }

@@ -43,7 +43,11 @@ export const App: React.FC = () => {
   };
 
   const handleReset = () => {
-    engineRef.current?.resetRace();
+    engineRef.current?.restartRaceCountdown();
+  };
+
+  const handleReturnToGrid = () => {
+    engineRef.current?.returnToStartingGrid();
   };
 
   const handleToggleCamera = () => {
@@ -161,7 +165,7 @@ export const App: React.FC = () => {
       <DriverProfileModal />
 
       {/* Victory Modal on 3 Laps Finished (Full Interactive Overlay) */}
-      <VictoryModal onRestart={handleReset} />
+      <VictoryModal onRestart={handleReset} onReturnToGrid={handleReturnToGrid} />
 
       {/* Garage / Vehicle Selection Modal (Full Interactive Overlay) */}
       <CarSelectModal
