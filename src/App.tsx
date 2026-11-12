@@ -1,4 +1,5 @@
 import React, { useEffect, useRef } from 'react';
+import { Analytics } from '@vercel/analytics/react';
 import { GameEngine } from './game/GameEngine';
 import { useGameStore } from './store/useGameStore';
 import { Speedometer } from './components/HUD/Speedometer';
@@ -172,6 +173,9 @@ export const App: React.FC = () => {
         onSelectCar={(id) => engineRef.current?.switchCar(id)}
         onSelectPaint={(hex) => engineRef.current?.setCarPaint(hex)}
       />
+
+      {/* Vercel Web Analytics */}
+      <Analytics />
     </div>
   );
 };
