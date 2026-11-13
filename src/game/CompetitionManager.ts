@@ -148,6 +148,10 @@ export class CompetitionManager {
   private lastPlayerU: number = 0;
   private hasInitialPlayerU: boolean = false;
   private lastReportedRank: number = -1;
+  public finishedRacers: { id: string; name: string; position: number; finishTime: number }[] = [];
+  public playerFinished: boolean = false;
+  public playerFinishRank: number | null = null;
+  private playerHasPassedMidpoint: boolean = false;
 
   // AI Competitor configurations: balanced racing lanes + fierce competitive skill tiers
   private configs: AICarConfig[] = [
@@ -233,9 +237,33 @@ export class CompetitionManager {
     this.hasInitialPlayerU = false;
     this.lastPlayerU = 0;
     this.lastReportedRank = -1;
+    this.playerHasPassedMidpoint = false;
+    this.playerFinished = false;
+    this.playerFinishRank = null;
+    this.finishedRacers = [];
     for (const car of this.aiCars) {
       car.setSpawn(car.config.gridSlot, direction);
     }
+  }
+
+  recordPlayerFinish(finishTime: number): number {
+    if (this.playerFinished && this.playerFinishRank !== null) {
+      return this.playerFinishRank;
+    }
+    this.playerFinished = true;
+    const rank = this.finishedRacers.length + 1;
+    this.playerFinishRank = rank;
+    this.finishedRacers.push({
+      id: 'player',
+      name: 'Player',
+      position: rank,
+      finishTime,
+    });
+    this.lastReportedRank = rank;
+    useGameStore.getState().updateTelemetry({
+      racePosition: rank,
+    });
+    return rank;
   }
 
   private getPlayerProgressU(): number {
@@ -309,7 +337,30 @@ export class CompetitionManager {
   ): { playerRank: number; leaderboard: CompetitorEntry[] } {
     // 1. Compute Live Player Progress along circuit
     const playerProgressU = this.getPlayerProgressU();
-    const playerTotalProgress = playerLap + playerProgressU;
+    if (playerProgressU > 0.40 && playerProgressU < 0.60) {
+      this.playerHasPassedMidpoint = true;
+    }
+
+    const normalizedPlayerProgress = (!this.playerHasPassedMidpoint && playerLap === 1 && playerProgressU > 0.85)
+      ? playerProgressU - 1.0
+      : playerProgressU;
+
+    const playerTotalProgress = this.playerFinished
+      ? 4.0 + playerProgressU
+      : playerLap + normalizedPlayerProgress;
+
+    // Check if any AI car completed all 3 laps
+    for (const car of this.aiCars) {
+      if (car.currentLap > 3 && !this.finishedRacers.some((f) => f.id === car.id)) {
+        const aiRank = this.finishedRacers.length + 1;
+        this.finishedRacers.push({
+          id: car.id,
+          name: car.name,
+          position: aiRank,
+          finishTime: 0,
+        });
+      }
+    }
 
     // Gather live racer obstacle list for clean overtaking awareness
     const allRacers = [
@@ -350,15 +401,29 @@ export class CompetitionManager {
       })),
     ];
 
-    // Sort descending by total race progress
-    entries.sort((a, b) => b.progress - a.progress);
+    // Sort descending by total race progress, with finished racers locked at top by finish order
+    entries.sort((a, b) => {
+      const aFin = this.finishedRacers.find((f) => f.id === a.id);
+      const bFin = this.finishedRacers.find((f) => f.id === b.id);
+      if (aFin && bFin) {
+        return aFin.position - bFin.position;
+      }
+      if (aFin) return -1;
+      if (bFin) return 1;
+      return b.progress - a.progress;
+    });
 
     // Assign positions 1st, 2nd, 3rd, 4th
     let playerRank = 1;
     entries.forEach((entry, idx) => {
-      entry.position = idx + 1;
+      const fin = this.finishedRacers.find((f) => f.id === entry.id);
+      if (fin) {
+        entry.position = fin.position;
+      } else {
+        entry.position = idx + 1;
+      }
       if (entry.isPlayer) {
-        playerRank = entry.position;
+        playerRank = this.playerFinishRank !== null ? this.playerFinishRank : entry.position;
       }
     });
 

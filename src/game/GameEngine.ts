@@ -117,6 +117,7 @@ export class GameEngine {
     window.addEventListener('resize', this.onResize);
     window.addEventListener('keydown', this.onKeyDown);
     window.addEventListener('wheel', this.onWheel, { passive: true });
+    (window as any).__gameEngine = this;
   }
 
   private setupLighting() {
@@ -298,8 +299,8 @@ export class GameEngine {
     else if (e.code === 'KeyM') {
       this.toggleTrackDirection();
     }
-    // Car Selection Garage [V] or [G]
-    else if (e.code === 'KeyV' || e.code === 'KeyG') {
+    // Car Selection Garage [G]
+    else if (e.code === 'KeyG') {
       useGameStore.getState().toggleCarSelect();
     }
   };
@@ -552,7 +553,8 @@ export class GameEngine {
       this.vehicle.update(delta);
 
       // 2. AI Competitors Fleet & Live Leaderboard Standings (with Forza Horizon Camera Impact Trauma)
-      this.competitionManager.update(delta, this.track.colliders, this.currentLap, (impactIntensity) => {
+      const passedLap = this.isFinished ? this.totalLaps + 1 : this.currentLap;
+      this.competitionManager.update(delta, this.track.colliders, passedLap, (impactIntensity) => {
         this.followCamera.addShake(impactIntensity * 0.55);
       });
 
@@ -587,9 +589,8 @@ export class GameEngine {
                   origin: { y: 0.6 },
                 });
 
-                const gStore = useGameStore.getState();
-                const playerStanding = gStore.leaderboard.find(r => r.isPlayer);
-                const place = playerStanding ? playerStanding.position : 1;
+                // Record player official finish in competition manager
+                const place = this.competitionManager.recordPlayerFinish(this.totalRaceTime);
                 const totalSeconds = this.totalRaceTime;
 
                 // 3-Star Rating: 1★ Finish Race, 2★ Podium Top 3, 3★ 1st Place or Sub 180s
@@ -598,6 +599,8 @@ export class GameEngine {
                 if (place === 1 || totalSeconds < 185) starsEarned++;
 
                 const xpGained = place === 1 ? 600 : (place === 2 ? 400 : 250);
+                const gStore = useGameStore.getState();
+                gStore.updateTelemetry({ racePosition: place, finished: true });
                 gStore.awardStars(starsEarned, this.track.trackDirection);
                 gStore.addDriverXp(xpGained, gStore.coinsCollected, place === 1);
                 gStore.setGameState('victory');
@@ -712,6 +715,7 @@ export class GameEngine {
     if (this.animationFrameId) {
       cancelAnimationFrame(this.animationFrameId);
     }
+    delete (window as any).__gameEngine;
     window.removeEventListener('resize', this.onResize);
     window.removeEventListener('keydown', this.onKeyDown);
     window.removeEventListener('wheel', this.onWheel);
