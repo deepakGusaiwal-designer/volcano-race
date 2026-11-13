@@ -1,8 +1,72 @@
-import React, { memo } from 'react';
+import React, { memo, useRef, useEffect } from 'react';
 import { useGameStore } from '../../store/useGameStore';
 
+// Main Tachometer Gauge Geometry
+const cx = 195;
+const cy = 115;
+const rMain = 88;
+
+// Boost Sub-Dial Geometry
+const bx = 82;
+const by = 162;
+const rBoost = 38;
+
+// Helper: Polar to Cartesian (0° = 12 o'clock, clockwise)
+const polar = (x: number, y: number, deg: number, r: number) => {
+  const rad = ((deg - 90) * Math.PI) / 180.0;
+  return {
+    x: x + r * Math.cos(rad),
+    y: y + r * Math.sin(rad),
+  };
+};
+
+// Helper: Annular Segment for N2O LED blocks
+const describeAnnularSector = (
+  x: number,
+  y: number,
+  rIn: number,
+  rOut: number,
+  startDeg: number,
+  endDeg: number
+) => {
+  const p1 = polar(x, y, startDeg, rOut);
+  const p2 = polar(x, y, endDeg, rOut);
+  const p3 = polar(x, y, endDeg, rIn);
+  const p4 = polar(x, y, startDeg, rIn);
+  const largeArc = endDeg - startDeg > 180 ? 1 : 0;
+  return `M ${p1.x.toFixed(1)} ${p1.y.toFixed(1)} A ${rOut} ${rOut} 0 ${largeArc} 1 ${p2.x.toFixed(1)} ${p2.y.toFixed(1)} L ${p3.x.toFixed(1)} ${p3.y.toFixed(1)} A ${rIn} ${rIn} 0 ${largeArc} 0 ${p4.x.toFixed(1)} ${p4.y.toFixed(1)} Z`;
+};
+
+// Precomputed static geometry for high performance (0 allocation per render)
+const N2O_SEGMENT_PATHS = Array.from({ length: 12 }).map((_, i) => {
+  const startAngle = 232 + i * 8.0;
+  const endAngle = startAngle + 6.2;
+  return describeAnnularSector(cx, cy, 97, 107, startAngle, endAngle);
+});
+
+const RPM_LABELS = [
+  { num: 0, deg: 130.0 },
+  { num: 1, deg: 159.5 },
+  { num: 2, deg: 189.0 },
+  { num: 3, deg: 218.5 },
+  { num: 4, deg: 248.0 },
+  { num: 5, deg: 277.5 },
+  { num: 6, deg: 307.0 },
+  { num: 7, deg: 336.5 },
+  { num: 8, deg: 366.0 },
+  { num: 9, deg: 395.5 },
+];
+
+const MINOR_TICKS = Array.from({ length: 9 }).map((_, i) => {
+  const deg = 130 + (i + 0.5) * 29.5;
+  const tickOuter = polar(cx, cy, deg, 82);
+  const tickInner = polar(cx, cy, deg, 77);
+  return { tickInner, tickOuter };
+});
+
 export const Speedometer: React.FC = memo(() => {
-  const speed = useGameStore((state) => state.speed);
+  const rawSpeed = useGameStore((state) => state.speed);
+  const speed = Math.abs(rawSpeed);
   const gear = useGameStore((state) => state.gear);
   const rpm = useGameStore((state) => state.rpm);
   const nitro = useGameStore((state) => state.nitro);
@@ -10,28 +74,18 @@ export const Speedometer: React.FC = memo(() => {
   const isBoosting = useGameStore((state) => state.isBoosting);
   const isBraking = useGameStore((state) => state.isBraking);
 
-  // Main Tachometer Gauge Geometry
-  const cx = 195;
-  const cy = 115;
-  const rMain = 88;
-
-  // Boost Sub-Dial Geometry
-  const bx = 82;
-  const by = 162;
-  const rBoost = 38;
-
-  // Tachometer Needle Angle:
+  // Tachometer Needle Target Angle:
   // 1000 RPM (idle) starts at 130°, sweeps clockwise 265° to 9000 RPM (395° / 35°)
   const minRpm = 1000;
   const maxRpm = 9000;
   const rpmClamped = Math.min(maxRpm, Math.max(minRpm, rpm));
   const rpmRatio = (rpmClamped - minRpm) / (maxRpm - minRpm);
-  const tachAngle = 130 + rpmRatio * 265;
+  const targetTachAngle = 130 + rpmRatio * 265;
 
-  // Redline / Shift Warning (flashes at 7800+ RPM)
+  // Redline / Shift Warning (glows at 7800+ RPM)
   const isRedline = rpm >= 7800;
 
-  // Turbo Boost / Vacuum Simulation (-30 to +30 PSI, pure reactive computation)
+  // Turbo Boost / Vacuum Simulation (-30 to +30 PSI)
   let targetBoost = -18;
   if (isBoosting) {
     targetBoost = 30; // Max PSI under Nitrous Hyper-Boost
@@ -43,58 +97,71 @@ export const Speedometer: React.FC = memo(() => {
     if (isDrifting) targetBoost += 5;
   }
   const clampedBoost = Math.min(30, Math.max(-30, targetBoost));
-  const boostAngle = 180 + (clampedBoost / 30) * 90;
+  const targetBoostAngle = 180 + (clampedBoost / 30) * 90;
 
   // N2O Arc: 12 Segmented LED blocks from 232° to 326° around (cx, cy)
-  const n2oBlocksCount = 12;
-  const activeN2oBlocks = Math.round((nitro / 100) * n2oBlocksCount);
+  const activeN2oBlocks = Math.round((nitro / 100) * 12);
 
-  // Helper: Polar to Cartesian (0° = 12 o'clock, clockwise)
-  const polar = (x: number, y: number, deg: number, r: number) => {
-    const rad = ((deg - 90) * Math.PI) / 180.0;
-    return {
-      x: x + r * Math.cos(rad),
-      y: y + r * Math.sin(rad),
+  // Needle DOM references & direct 60+ FPS RAF interpolation:
+  // Eliminates all CSS transition lag, prevents DOM thrashing, and ensures the needle
+  // always pivots flawlessly around its center bolt (cx, cy) with 0 off-axis jitter or flickering.
+  const tachNeedleRef = useRef<SVGGElement | null>(null);
+  const boostNeedleRef = useRef<SVGGElement | null>(null);
+  const currentTachAngle = useRef(130);
+  const currentBoostAngle = useRef(180);
+
+  const targetTachAngleRef = useRef(130);
+  const targetBoostAngleRef = useRef(180);
+
+  // Sync targets
+  targetTachAngleRef.current = targetTachAngle;
+  targetBoostAngleRef.current = targetBoostAngle;
+
+  useEffect(() => {
+    let animId: number;
+    let lastTime = performance.now();
+
+    const animateNeedles = (now: number) => {
+      const dt = Math.min(0.05, Math.max(0.001, (now - lastTime) / 1000));
+      lastTime = now;
+
+      // Analog mechanical needle damping (smooth, responsive tracking)
+      const tachLambda = 24.0;
+      const tachStep = 1 - Math.exp(-tachLambda * dt);
+      currentTachAngle.current += (targetTachAngleRef.current - currentTachAngle.current) * tachStep;
+
+      if (tachNeedleRef.current) {
+        tachNeedleRef.current.setAttribute(
+          'transform',
+          `rotate(${currentTachAngle.current.toFixed(2)} ${cx} ${cy})`
+        );
+      }
+
+      // Boost needle damping
+      const boostLambda = 18.0;
+      const boostStep = 1 - Math.exp(-boostLambda * dt);
+      currentBoostAngle.current += (targetBoostAngleRef.current - currentBoostAngle.current) * boostStep;
+
+      if (boostNeedleRef.current) {
+        boostNeedleRef.current.setAttribute(
+          'transform',
+          `rotate(${currentBoostAngle.current.toFixed(2)} ${bx} ${by})`
+        );
+      }
+
+      animId = requestAnimationFrame(animateNeedles);
     };
-  };
 
-  // Helper: Annular Segment for N2O LED blocks
-  const describeAnnularSector = (
-    x: number,
-    y: number,
-    rIn: number,
-    rOut: number,
-    startDeg: number,
-    endDeg: number
-  ) => {
-    const p1 = polar(x, y, startDeg, rOut);
-    const p2 = polar(x, y, endDeg, rOut);
-    const p3 = polar(x, y, endDeg, rIn);
-    const p4 = polar(x, y, startDeg, rIn);
-    const largeArc = endDeg - startDeg > 180 ? 1 : 0;
-    return `M ${p1.x.toFixed(1)} ${p1.y.toFixed(1)} A ${rOut} ${rOut} 0 ${largeArc} 1 ${p2.x.toFixed(1)} ${p2.y.toFixed(1)} L ${p3.x.toFixed(1)} ${p3.y.toFixed(1)} A ${rIn} ${rIn} 0 ${largeArc} 0 ${p4.x.toFixed(1)} ${p4.y.toFixed(1)} Z`;
-  };
-
-  // Precomputed RPM numbers (0 to 9)
-  const rpmLabels = [
-    { num: 0, deg: 130.0 },
-    { num: 1, deg: 159.5 },
-    { num: 2, deg: 189.0 },
-    { num: 3, deg: 218.5 },
-    { num: 4, deg: 248.0 },
-    { num: 5, deg: 277.5 },
-    { num: 6, deg: 307.0 },
-    { num: 7, deg: 336.5 },
-    { num: 8, deg: 366.0 },
-    { num: 9, deg: 395.5 },
-  ];
+    animId = requestAnimationFrame(animateNeedles);
+    return () => cancelAnimationFrame(animId);
+  }, []);
 
   return (
     <div className="relative select-none pointer-events-none flex flex-col items-end">
       {/* NFS Underground Arcade Badges */}
       <div className="flex flex-col items-end space-y-1 mb-1 mr-4">
         {isDrifting && (
-          <div className="flex items-center space-x-1.5 bg-yellow-500/20 backdrop-blur-md px-3 py-1 rounded-sm border border-yellow-400/50 shadow-[0_0_12px_rgba(250,204,21,0.4)] animate-pulse">
+          <div className="flex items-center space-x-1.5 bg-yellow-500/20 backdrop-blur-md px-3 py-1 rounded-sm border border-yellow-400/50 shadow-[0_0_12px_rgba(250,204,21,0.4)]">
             <span className="text-[10px] text-yellow-300 font-extrabold tracking-wider uppercase">
               DRIFT BONUS
             </span>
@@ -104,7 +171,7 @@ export const Speedometer: React.FC = memo(() => {
           </div>
         )}
         {isBoosting && (
-          <div className="flex items-center space-x-1.5 bg-cyan-500/25 backdrop-blur-md px-3 py-1 rounded-sm border border-cyan-400/60 shadow-[0_0_16px_rgba(0,240,255,0.6)] animate-pulse">
+          <div className="flex items-center space-x-1.5 bg-cyan-500/25 backdrop-blur-md px-3 py-1 rounded-sm border border-cyan-400/60 shadow-[0_0_16px_rgba(0,240,255,0.6)]">
             <span className="text-[10px] text-cyan-200 font-extrabold tracking-wider uppercase">
               HYPER BOOST
             </span>
@@ -115,11 +182,11 @@ export const Speedometer: React.FC = memo(() => {
         )}
       </div>
 
-      {/* Main NFS Underground Dual-Gauge Cluster SVG */}
-      <div className="relative w-[300px] sm:w-[340px] transition-transform duration-150">
+      {/* Main NFS Underground Dual-Gauge Cluster SVG Container */}
+      <div className="relative w-[300px] sm:w-[340px] drop-shadow-[0_12px_24px_rgba(0,0,0,0.85)]">
         <svg
           viewBox="30 8 266 212"
-          className="w-full h-auto overflow-visible filter drop-shadow-[0_12px_24px_rgba(0,0,0,0.9)]"
+          className="w-full h-auto overflow-visible"
         >
           <defs>
             {/* Authentic Carbon Fiber Weave Twill Pattern */}
@@ -181,7 +248,7 @@ export const Speedometer: React.FC = memo(() => {
           />
 
           {/* 2. N2O Curved LED Bar (Upper Left Shoulder) */}
-          <g style={{ filter: isBoosting ? 'drop-shadow(0 0 5px #00f0ff)' : undefined }}>
+          <g>
             {/* Background Track Groove */}
             <path
               d="M 124.9 201.5 A 108 108 0 0 1 155.5 53.6"
@@ -192,14 +259,12 @@ export const Speedometer: React.FC = memo(() => {
             />
 
             {/* Segmented LED Blocks */}
-            {Array.from({ length: n2oBlocksCount }).map((_, i) => {
-              const startAngle = 232 + i * 8.0;
-              const endAngle = startAngle + 6.2;
+            {N2O_SEGMENT_PATHS.map((path, i) => {
               const isActive = i < activeN2oBlocks;
               return (
                 <path
                   key={`n2o-seg-${i}`}
-                  d={describeAnnularSector(cx, cy, 97, 107, startAngle, endAngle)}
+                  d={path}
                   fill={
                     isActive
                       ? isBoosting
@@ -209,7 +274,6 @@ export const Speedometer: React.FC = memo(() => {
                   }
                   stroke={isActive ? (isBoosting ? '#ffffff' : '#4df3ff') : '#082533'}
                   strokeWidth="0.6"
-                  className={isActive && isBoosting ? 'animate-pulse' : ''}
                 />
               );
             })}
@@ -225,7 +289,6 @@ export const Speedometer: React.FC = memo(() => {
               fontStyle="italic"
               letterSpacing="0.05em"
               textAnchor="middle"
-              style={{ filter: isBoosting ? 'drop-shadow(0 0 5px #00f0ff)' : undefined }}
             >
               N2O
             </text>
@@ -303,15 +366,22 @@ export const Speedometer: React.FC = memo(() => {
               -30
             </text>
 
-            {/* Boost Needle (Neon Red) */}
+            {/* Boost Needle (Direct SVG RAF Transform) */}
             <g
-              style={{
-                transform: `rotate(${boostAngle}deg)`,
-                transformOrigin: `${bx}px ${by}px`,
-                transition: 'transform 85ms cubic-bezier(0.1, 0.9, 0.2, 1.0)',
-                filter: 'drop-shadow(0 0 2.5px #ff1744)',
-              }}
+              ref={boostNeedleRef}
+              transform={`rotate(180 ${bx} ${by})`}
             >
+              {/* Underlying Vector Glow */}
+              <line
+                x1={bx}
+                y1={by + 4}
+                x2={bx}
+                y2={by - 27}
+                stroke="#ff1744"
+                strokeWidth="3.5"
+                opacity="0.32"
+                strokeLinecap="round"
+              />
               {/* Counter-weight */}
               <line
                 x1={bx}
@@ -356,19 +426,21 @@ export const Speedometer: React.FC = memo(() => {
             {/* Inner Carbon Fiber Face */}
             <circle cx={cx} cy={cy} r={rMain - 4} fill="url(#nfs-carbon)" />
 
-            {/* Shift Light Redline Flash Halo */}
-            {isRedline && (
-              <circle
-                cx={cx}
-                cy={cy}
-                r={rMain - 6}
-                fill="none"
-                stroke="#ff1744"
-                strokeWidth="4"
-                className="animate-pulse"
-                style={{ filter: 'drop-shadow(0 0 6px #ff1744)' }}
-              />
-            )}
+            {/* Shift Light Redline Flash Halo (Smooth Opacity Transition, No DOM Mount Thrash) */}
+            <circle
+              cx={cx}
+              cy={cy}
+              r={rMain - 6}
+              fill="none"
+              stroke="#ff1744"
+              strokeWidth="4"
+              opacity={isRedline ? 0.85 : 0}
+              className={isRedline ? 'animate-pulse' : ''}
+              style={{
+                transition: 'opacity 140ms ease-out',
+                pointerEvents: 'none',
+              }}
+            />
 
             {/* Outer Colored RPM Scale Track */}
             {/* Green Safe/Power Zone (0 through 6 RPM, 130° to 305°) */}
@@ -406,7 +478,7 @@ export const Speedometer: React.FC = memo(() => {
             />
 
             {/* RPM Radial Tick Marks & Numbers (0 through 9) */}
-            {rpmLabels.map(({ num, deg }) => {
+            {RPM_LABELS.map(({ num, deg }) => {
               const tickOuter = polar(cx, cy, deg, 84);
               const tickInner = polar(cx, cy, deg, 75);
               const textPos = polar(cx, cy, deg, 64);
@@ -441,22 +513,17 @@ export const Speedometer: React.FC = memo(() => {
             })}
 
             {/* Half-unit Minor Ticks (0.5 to 8.5) */}
-            {Array.from({ length: 9 }).map((_, i) => {
-              const deg = 130 + (i + 0.5) * 29.5;
-              const tickOuter = polar(cx, cy, deg, 82);
-              const tickInner = polar(cx, cy, deg, 77);
-              return (
-                <line
-                  key={`minor-tick-${i}`}
-                  x1={tickInner.x}
-                  y1={tickInner.y}
-                  x2={tickOuter.x}
-                  y2={tickOuter.y}
-                  stroke="rgba(20, 25, 30, 0.7)"
-                  strokeWidth="1"
-                />
-              );
-            })}
+            {MINOR_TICKS.map((tick, i) => (
+              <line
+                key={`minor-tick-${i}`}
+                x1={tick.tickInner.x}
+                y1={tick.tickInner.y}
+                x2={tick.tickOuter.x}
+                y2={tick.tickOuter.y}
+                stroke="rgba(20, 25, 30, 0.7)"
+                strokeWidth="1"
+              />
+            ))}
 
             {/* Digital Readout Area (Right Half of Dial) */}
             {/* Gear Number (Top Right) */}
@@ -469,7 +536,6 @@ export const Speedometer: React.FC = memo(() => {
               fontWeight="900"
               fontStyle="italic"
               textAnchor="middle"
-              className="filter drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]"
             >
               {gear}
             </text>
@@ -485,7 +551,6 @@ export const Speedometer: React.FC = memo(() => {
               fontStyle="italic"
               letterSpacing="-0.03em"
               textAnchor="middle"
-              className="filter drop-shadow-[0_2px_6px_rgba(0,0,0,0.9)]"
             >
               {speed}
             </text>
@@ -505,15 +570,22 @@ export const Speedometer: React.FC = memo(() => {
               KM/H
             </text>
 
-            {/* Tachometer Needle (Long Vivid Neon Red Pointer) */}
+            {/* Tachometer Needle (Direct SVG RAF Transform around cx, cy) */}
             <g
-              style={{
-                transform: `rotate(${tachAngle}deg)`,
-                transformOrigin: `${cx}px ${cy}px`,
-                transition: 'transform 65ms cubic-bezier(0.1, 0.9, 0.2, 1.0)',
-                filter: isRedline ? 'drop-shadow(0 0 6px #ff1744)' : 'drop-shadow(0 0 3px #ff1744)',
-              }}
+              ref={tachNeedleRef}
+              transform={`rotate(130 ${cx} ${cy})`}
             >
+              {/* Underlying Neon Red Vector Glow */}
+              <line
+                x1={cx}
+                y1={cy + 12}
+                x2={cx}
+                y2={cy - 75}
+                stroke="#ff1e35"
+                strokeWidth="5"
+                opacity={isRedline ? 0.6 : 0.35}
+                strokeLinecap="round"
+              />
               {/* Rear Counter-weight */}
               <line
                 x1={cx}
@@ -535,12 +607,12 @@ export const Speedometer: React.FC = memo(() => {
                 y1={cy}
                 x2={cx}
                 y2={cy - 72}
-                stroke="#ff7350"
+                stroke="#ff9e80"
                 strokeWidth="1.2"
               />
             </g>
 
-            {/* Center Metallic Hub & Bolt */}
+            {/* Center Metallic Hub & Bolt (Covers needle base cleanly) */}
             <circle
               cx={cx}
               cy={cy}

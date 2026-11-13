@@ -75,7 +75,6 @@ export class GameEngine {
     this.renderer = new THREE.WebGLRenderer({
       antialias: true,
       powerPreference: 'high-performance',
-      precision: 'highp',
     });
     this.renderer.setSize(container.clientWidth, container.clientHeight);
     // Optimized for consistent 60 FPS: clamp DPR to 1.0 to eliminate fillrate bottlenecks on high-DPI/4K displays
@@ -505,10 +504,10 @@ export class GameEngine {
       this.animationFrameId = requestAnimationFrame(animate);
 
       const rawDelta = this.clock.getDelta();
-      // Clamp delta to prevent physics explosions on tab switch or micro-hiccups
-      const clampedDelta = Math.min(Math.max(rawDelta, 0.001), 0.038);
-      // Low-pass exponential smoothing filter eliminates frame-to-frame delta jitter
-      this.smoothDelta = this.smoothDelta * 0.82 + clampedDelta * 0.18;
+      // Responsive clamped delta: 30 to 144 FPS
+      const clampedDelta = Math.min(Math.max(rawDelta, 0.004), 0.033);
+      // Fast, responsive 65% weight on current frame for zero input lag and silky smooth motion
+      this.smoothDelta = this.smoothDelta * 0.35 + clampedDelta * 0.65;
       const delta = this.smoothDelta;
       const now = performance.now();
       const store = useGameStore.getState();
@@ -679,8 +678,8 @@ export class GameEngine {
       // 6. Render
       this.renderer.render(this.scene, this.camera);
 
-      // 7. Telemetry Store Update (throttled to ~15 Hz to prevent React HUD re-render thrashing on the 60 FPS animation loop)
-      if (now - this.lastTelemetryTime >= 66 || this.isFinished) {
+      // 7. Telemetry Store Update (throttled to ~30 Hz for responsive HUD metrics)
+      if (now - this.lastTelemetryTime >= 33 || this.isFinished) {
         this.lastTelemetryTime = now;
         store.updateTelemetry({
           ...this.vehicle.getTelemetry(),

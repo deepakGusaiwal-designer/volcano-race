@@ -29,6 +29,7 @@ export class VehicleController {
   public nitro = 100;
   public asphaltNitroTimer = 0;
   public isAsphaltSurging = false;
+  private gearShiftCooldown = 0.0;
 
   public isBoosting = false;
   public isDrifting = false;
@@ -480,6 +481,9 @@ export class VehicleController {
     targetPos.y = Math.max(0.04, Math.min(0.20, targetPos.y));
     this.setSpawn(targetPos, targetHeading);
     this.speedKmH = 0; // Stationary on respawn for full player control, preventing instant re-entry into hazard
+    this.gear = 1;
+    this.rpm = 1050;
+    this.gearShiftCooldown = 0;
     this.velocity.set(0, 0, 0);
     this.verticalVelocity = 0;
     this.surfaceNormal.set(0, 1, 0);
@@ -531,7 +535,7 @@ export class VehicleController {
 
     // Smooth, progressive steering build-up (avoids overly fast snap-turns) and stable self-centering
     const isSteeringInput = this.input.left || this.input.right;
-    const steerSpeed = isSteeringInput ? 8.2 : 10.5;
+    const steerSpeed = isSteeringInput ? 13.5 : 15.0;
     this.steerAngle += (targetSteer - this.steerAngle) * Math.min(1, dt * steerSpeed);
 
     // 2. Handbrake and Nitro (Asphalt Hyper-Boost Surge)
@@ -586,26 +590,26 @@ export class VehicleController {
 
     // 3. Acceleration & Speed Physics: unique per vehicle model
     let maxSpeed = 185;
-    let baseAccel = 68;
-    let baseTurnMultiplier = 2.75;
-    let driftTurnMultiplier = 3.45;
+    let baseAccel = 82;
+    let baseTurnMultiplier = 2.95;
+    let driftTurnMultiplier = 3.65;
 
     if (this.carModelId === 'iridium') {
       maxSpeed = this.isAsphaltSurging ? 255 : (this.isBoosting ? 238 : 192);
-      baseAccel = this.isAsphaltSurging ? 148 : (this.isBoosting ? 112 : 74);
-      baseTurnMultiplier = 2.55;
-      driftTurnMultiplier = 3.35;
+      baseAccel = this.isAsphaltSurging ? 155 : (this.isBoosting ? 120 : 88);
+      baseTurnMultiplier = 2.75;
+      driftTurnMultiplier = 3.55;
     } else if (this.carModelId === 'rd09') {
       maxSpeed = this.isAsphaltSurging ? 242 : (this.isBoosting ? 226 : 180);
-      baseAccel = this.isAsphaltSurging ? 135 : (this.isBoosting ? 100 : 66);
-      baseTurnMultiplier = 2.70;
-      driftTurnMultiplier = 3.85; // Supreme wide drifting capability
+      baseAccel = this.isAsphaltSurging ? 145 : (this.isBoosting ? 110 : 80);
+      baseTurnMultiplier = 2.85;
+      driftTurnMultiplier = 4.05; // Supreme wide drifting capability
     } else {
       // Mazda LM Vision
       maxSpeed = this.isAsphaltSurging ? 248 : (this.isBoosting ? 232 : 185);
-      baseAccel = this.isAsphaltSurging ? 140 : (this.isBoosting ? 105 : 68);
-      baseTurnMultiplier = 2.75;
-      driftTurnMultiplier = 3.45;
+      baseAccel = this.isAsphaltSurging ? 150 : (this.isBoosting ? 115 : 82);
+      baseTurnMultiplier = 2.95;
+      driftTurnMultiplier = 3.65;
     }
 
     const accelRate = baseAccel * Math.max(0.22, 1 - Math.abs(this.speedKmH) / maxSpeed);
@@ -668,7 +672,7 @@ export class VehicleController {
 
     // Physical angular yaw acceleration with smooth rotational momentum
     const targetYawRate = this.steerAngle * turnMultiplier * turnEffectiveness * corneringBite * reverseMult;
-    const yawAccel = this.isDrifting ? 9.5 : (isSteeringInput ? 7.8 : 9.5);
+    const yawAccel = this.isDrifting ? 11.5 : (isSteeringInput ? 11.0 : 13.5);
     this.yawVelocity += (targetYawRate - this.yawVelocity) * Math.min(1, dt * yawAccel);
     this.currentHeading += this.yawVelocity * dt;
 
@@ -1285,55 +1289,161 @@ export class VehicleController {
     this.lavaPullHeading = (leftLava > rightLava ? 0.35 : (rightLava > leftLava ? -0.35 : 0));
 
     // 9. Gear & RPM
-    this.calculateGearAndRpm();
+    this.calculateGearAndRpm(dt);
 
     // 10. Audio
     soundEffects.updateEngine(this.rpm, Math.abs(this.speedKmH), this.isDrifting, this.isBoosting);
   }
 
-  private calculateGearAndRpm() {
-    if (this.speedKmH < 0) {
-      this.gear = 'R';
-      this.rpm = 1000 + Math.abs(this.speedKmH) * 120;
-      return;
+  private calculateGearAndRpm(dt: number) {
+    if (this.gearShiftCooldown > 0) {
+      this.gearShiftCooldown -= dt;
     }
 
     const s = this.speedKmH;
-    let gearRatio = 1;
-    let baseSpeed = 0;
 
-    if (s < 35) {
-      this.gear = 1;
-      baseSpeed = s;
-      gearRatio = 220;
-    } else if (s < 70) {
-      this.gear = 2;
-      baseSpeed = s - 35;
-      gearRatio = 180;
-    } else if (s < 110) {
-      this.gear = 3;
-      baseSpeed = s - 70;
-      gearRatio = 150;
-    } else if (s < 150) {
-      this.gear = 4;
-      baseSpeed = s - 110;
-      gearRatio = 130;
-    } else if (s < 190) {
-      this.gear = 5;
-      baseSpeed = s - 150;
-      gearRatio = 110;
-    } else {
-      this.gear = 6;
-      baseSpeed = s - 190;
-      gearRatio = 90;
+    // 1. Reverse gear
+    if (s < -0.8 || (this.input.backward && s <= 0.2)) {
+      this.gear = 'R';
+      const targetRpm = 1050 + Math.min(4800, Math.abs(s) * 125);
+      this.rpm += (targetRpm - this.rpm) * Math.min(1.0, dt * 14.0);
+      this.rpm = THREE.MathUtils.clamp(this.rpm, 1000, 9000);
+      return;
     }
 
-    this.rpm = Math.min(9000, 1100 + baseSpeed * gearRatio);
+    // 2. Standstill / Neutral / Burnout launch revving
+    if (Math.abs(s) < 1.0) {
+      this.gear = 1;
+      let targetRpm = 1050;
+      if (this.input.forward) {
+        // High-rev launch readiness with subtle rev limiter flutter
+        const flutter = Math.sin(Date.now() * 0.035) * 220;
+        targetRpm = 6600 + flutter;
+      }
+      this.rpm += (targetRpm - this.rpm) * Math.min(1.0, dt * (this.input.forward ? 18.0 : 8.0));
+      this.rpm = THREE.MathUtils.clamp(this.rpm, 1000, 9000);
+      return;
+    }
+
+    // 3. Forward Sequential Transmission with Robust Hysteresis (Gears 1 - 6)
+    // Prevents gear hunting/chatter when hovering around shift thresholds
+    let currentGear = typeof this.gear === 'number' ? this.gear : 1;
+
+    if (this.gearShiftCooldown <= 0) {
+      if (currentGear === 1 && s >= 38) {
+        currentGear = 2;
+        this.gearShiftCooldown = 0.16;
+      } else if (currentGear === 2) {
+        if (s >= 74) {
+          currentGear = 3;
+          this.gearShiftCooldown = 0.16;
+        } else if (s < 26) {
+          currentGear = 1;
+          this.gearShiftCooldown = 0.16;
+        }
+      } else if (currentGear === 3) {
+        if (s >= 116) {
+          currentGear = 4;
+          this.gearShiftCooldown = 0.16;
+        } else if (s < 58) {
+          currentGear = 2;
+          this.gearShiftCooldown = 0.16;
+        }
+      } else if (currentGear === 4) {
+        if (s >= 158) {
+          currentGear = 5;
+          this.gearShiftCooldown = 0.16;
+        } else if (s < 96) {
+          currentGear = 3;
+          this.gearShiftCooldown = 0.16;
+        }
+      } else if (currentGear === 5) {
+        if (s >= 198) {
+          currentGear = 6;
+          this.gearShiftCooldown = 0.16;
+        } else if (s < 136) {
+          currentGear = 4;
+          this.gearShiftCooldown = 0.16;
+        }
+      } else if (currentGear === 6) {
+        if (s < 174) {
+          currentGear = 5;
+          this.gearShiftCooldown = 0.16;
+        }
+      }
+    }
+
+    this.gear = currentGear;
+
+    // 4. Smooth continuous RPM curve per gear
+    let minSpeed = 0;
+    let maxSpeed = 38;
+    let baseRpm = 1100;
+    let peakRpm = 8200;
+
+    switch (currentGear) {
+      case 1:
+        minSpeed = 0;
+        maxSpeed = 38;
+        baseRpm = 1100;
+        peakRpm = 8200;
+        break;
+      case 2:
+        minSpeed = 26;
+        maxSpeed = 74;
+        baseRpm = 4100;
+        peakRpm = 8250;
+        break;
+      case 3:
+        minSpeed = 58;
+        maxSpeed = 116;
+        baseRpm = 4400;
+        peakRpm = 8300;
+        break;
+      case 4:
+        minSpeed = 96;
+        maxSpeed = 158;
+        baseRpm = 4700;
+        peakRpm = 8400;
+        break;
+      case 5:
+        minSpeed = 136;
+        maxSpeed = 198;
+        baseRpm = 4900;
+        peakRpm = 8500;
+        break;
+      case 6:
+        minSpeed = 174;
+        maxSpeed = 260;
+        baseRpm = 5100;
+        peakRpm = 8900;
+        break;
+    }
+
+    const gearRatio = THREE.MathUtils.clamp((s - minSpeed) / Math.max(1, maxSpeed - minSpeed), 0, 1);
+    let targetRpm = THREE.MathUtils.lerp(baseRpm, peakRpm, gearRatio);
+
+    // Boost & Drift power surges
+    if (this.isBoosting) {
+      targetRpm = Math.min(9000, targetRpm + 450);
+    } else if (this.isDrifting) {
+      targetRpm = Math.min(8800, targetRpm + 280);
+    }
+
+    // Engine overrun: RPM eases slightly when coasting off-throttle
+    if (!this.input.forward && !this.isBoosting && s > 5) {
+      targetRpm = Math.max(baseRpm * 0.88, targetRpm * 0.84);
+    }
+
+    // Exponential smoothing for natural needle inertia
+    const rpmSpeed = this.input.forward ? 16.0 : 10.0;
+    this.rpm += (targetRpm - this.rpm) * Math.min(1.0, dt * rpmSpeed);
+    this.rpm = THREE.MathUtils.clamp(this.rpm, 1000, 9000);
   }
 
   getTelemetry(): VehicleTelemetry {
     return {
-      speed: Math.round(this.speedKmH),
+      speed: Math.round(Math.abs(this.speedKmH)),
       rpm: Math.round(this.rpm),
       gear: this.gear,
       nitro: Math.round(this.nitro),

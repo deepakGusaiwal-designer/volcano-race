@@ -559,12 +559,12 @@ export class ForzaTrackVisuals {
 
     const redCurbsInstanced = new THREE.InstancedMesh(unitCurbGeo, redMat, totalRedTeeth);
     redCurbsInstanced.instanceMatrix.setUsage(THREE.StaticDrawUsage);
-    redCurbsInstanced.castShadow = true;
+    redCurbsInstanced.castShadow = false;
     redCurbsInstanced.receiveShadow = true;
 
     const whiteCurbsInstanced = new THREE.InstancedMesh(unitCurbGeo, whiteMat, totalWhiteTeeth);
     whiteCurbsInstanced.instanceMatrix.setUsage(THREE.StaticDrawUsage);
-    whiteCurbsInstanced.castShadow = true;
+    whiteCurbsInstanced.castShadow = false;
     whiteCurbsInstanced.receiveShadow = true;
 
     const dummy = new THREE.Object3D();
@@ -1090,7 +1090,7 @@ export class ForzaTrackVisuals {
         const boardMesh = new THREE.Mesh(boardGeo, signMat);
         boardMesh.position.set(finalPosX, boardBaseY + 0.95, finalPosZ);
         boardMesh.lookAt(boardMesh.position.clone().add(finalFaceDir));
-        boardMesh.castShadow = true;
+        boardMesh.castShadow = false;
         group.add(boardMesh);
 
         // Twin support steel posts firmly planted in the terrain verge
