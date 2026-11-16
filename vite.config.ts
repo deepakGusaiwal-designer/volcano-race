@@ -3,6 +3,14 @@ import react from '@vitejs/plugin-react';
 
 export default defineConfig({
   plugins: [react()],
+  optimizeDeps: {
+    include: [
+      'three',
+      'three/examples/jsm/loaders/GLTFLoader.js',
+      'three/examples/jsm/utils/SkeletonUtils.js',
+      'three-mesh-bvh'
+    ]
+  },
   build: {
     chunkSizeWarningLimit: 600,
     rollupOptions: {

@@ -51,7 +51,6 @@ export class GameEngine {
   private welcomeUnderglowLight: THREE.PointLight | null = null;
   private countdownTimer: number | null = null;
   private countdownClearTimeout: number | null = null;
-  private rivalsLoadPromise: Promise<void> | null = null;
 
   // FPS & Performance Profiling
   private frameCount = 0;
@@ -166,52 +165,48 @@ export class GameEngine {
     const store = useGameStore.getState();
 
     try {
-      store.setLoading(true, 'Loading Volcano Track & Terrain...', 30);
+      // 1. Volcano Track & Terrain (10% - 45%)
+      store.setLoading(true, 'Loading Volcano Track & Terrain...', 15);
       await this.track.loadTrack((progress) => {
-        store.setLoading(true, 'Loading Volcano Track...', 30 + Math.round(progress * 40));
+        store.setLoading(true, 'Loading Volcano Track...', 15 + Math.round(progress * 30));
       });
 
       this.vehicle.setColliders(this.track.colliders, this.track.barriers);
       this.nitroPickupManager.initPickups(this.track.colliders);
       this.hotWheelsPickupManager.initPickups(this.track.colliders);
 
+      // 2. Selected Player Car (45% - 65%)
       const initialCarId = store.carId || 'mazda';
       const initialCarName = CAR_PRESETS[initialCarId]?.name || 'Mazda LM Vision';
-      store.setLoading(true, `Loading ${initialCarName}...`, 75);
+      store.setLoading(true, `Loading ${initialCarName}...`, 50);
       await this.vehicle.loadCar(initialCarId);
 
-      // Pre-compile WebGL shaders to eliminate initial-render freeze
-      store.setLoading(true, 'Igniting Shaders & Lighting...', 92);
-      try {
-        await (this.renderer as any).compileAsync(this.scene, this.camera);
-      } catch {
-        this.renderer.compile(this.scene, this.camera);
-      }
-
-      // Default to Reverse Track Circuit start mode as requested
+      // Set initial circuit direction and player spawn
       this.track.setTrackDirection('reverse');
       this.vehicle.setSpawn(this.track.spawnPosition, this.track.spawnHeading);
 
-      // Dismiss loading screen immediately: Show the NFS Underground Start Screen right away!
+      // 3. Competitor Starting Grid Fleet (65% - 90%)
+      store.setLoading(true, 'Assembling Starting Grid Fleet...', 68);
+      await this.competitionManager.loadCompetitors((loaded, total) => {
+        const pct = 68 + Math.round((loaded / total) * 22);
+        store.setLoading(true, `Assembling Starting Grid Fleet (${loaded}/${total})...`, pct);
+      });
+      this.competitionManager.setTrackDirection('reverse');
+      this.competitionManager.resetGrid('reverse');
+
+      // 4. Pre-warm 100% of WebGL Shaders & GPU Shadow Pipelines (90% - 100%)
+      // With all 4 cars and the entire track in this.scene, this compiles all shaders upfront!
+      store.setLoading(true, 'Igniting Shaders & Lighting...', 94);
+      this.renderer.compile(this.scene, this.camera);
+      this.renderer.shadowMap.needsUpdate = true;
+      this.renderer.render(this.scene, this.camera);
+
+      // 5. Dismiss loading screen: All assets, models, textures & shaders are 100% in VRAM!
       store.setLoading(false);
       store.setGameState('welcome');
       store.setNotification('WELCOME TO VOLCANO GRAND PRIX! 🏁 Click START RACE to ignite engine');
 
       this.startLoop();
-
-      // Load AI rivals asynchronously in the background so player never waits!
-      this.rivalsLoadPromise = this.competitionManager.loadCompetitors().then(async () => {
-        this.competitionManager.setTrackDirection('reverse');
-        this.competitionManager.resetGrid('reverse');
-        // Pre-compile competitor shaders in background WebGL driver threads to eliminate start hitch
-        if (this.renderer && (this.renderer as any).compileAsync) {
-          for (const car of this.competitionManager.aiCars) {
-            await (this.renderer as any).compileAsync(car.mesh, this.camera, this.scene);
-          }
-        }
-      }).catch((err) => {
-        console.warn('Background competitor fleet load notice:', err);
-      });
     } catch (err) {
       console.error('Failed to initialize game engine:', err);
       store.setLoading(false, 'Failed to load assets.');
@@ -222,13 +217,6 @@ export class GameEngine {
     const store = useGameStore.getState();
     soundEffects.init();
     soundEffects.resume();
-
-    // If competitor rivals are still downloading in the background, await their completion
-    if (this.rivalsLoadPromise) {
-      store.setNotification('Finalizing Starting Grid Fleet... 🏎️');
-      await this.rivalsLoadPromise;
-      this.rivalsLoadPromise = null;
-    }
 
     // 1. Clear any active countdown timer or pending GO banner clear timeout
     if (this.countdownTimer !== null) {

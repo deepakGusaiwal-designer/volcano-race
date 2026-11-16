@@ -154,6 +154,15 @@ export class CompetitionManager {
   private playerHasPassedMidpoint: boolean = false;
   public raceActiveTime = 0;
   private lastCollisionSoundTime = 0;
+  private lastLeaderboardUpdate = 0;
+  private collidableVehicles: {
+    position: THREE.Vector3;
+    forwardVec: THREE.Vector3;
+    velocity: THREE.Vector3;
+    carScale: number;
+    isPlayer: boolean;
+    applyCollisionImpulse: (impulse: THREE.Vector3, impactPoint: THREE.Vector3) => void;
+  }[] = [];
 
   // Zero-allocation scratch vectors
   private scratchPlayerPt = new THREE.Vector3();
@@ -212,6 +221,25 @@ export class CompetitionManager {
       const car = new AICarController(this.scene, this.particleManager, this.trackSpline, cfg);
       this.aiCars.push(car);
     }
+
+    this.collidableVehicles = [
+      {
+        position: this.playerVehicle.position,
+        forwardVec: this.playerVehicle.forwardVec,
+        velocity: this.playerVehicle.velocity,
+        carScale: this.playerVehicle.carScale,
+        isPlayer: true,
+        applyCollisionImpulse: (imp, pt) => this.playerVehicle.applyCollisionImpulse(imp, pt),
+      },
+      ...this.aiCars.map((car) => ({
+        position: car.position,
+        forwardVec: car.forwardVec,
+        velocity: car.velocity,
+        carScale: car.carScale,
+        isPlayer: false,
+        applyCollisionImpulse: (imp: THREE.Vector3, pt: THREE.Vector3) => car.applyCollisionImpulse(imp, pt),
+      })),
+    ];
   }
 
   setTrackDirection(dir: 'normal' | 'reverse') {
@@ -243,6 +271,13 @@ export class CompetitionManager {
   setCarScale(scale: number) {
     for (const car of this.aiCars) {
       car.setCarScale(scale);
+    }
+    for (const v of this.collidableVehicles) {
+      if (v.isPlayer) {
+        v.carScale = this.playerVehicle.carScale;
+      } else {
+        v.carScale = scale;
+      }
     }
   }
 
@@ -458,7 +493,9 @@ export class CompetitionManager {
     }
 
     // Update telemetry in Game Store ONLY when rank actually changes
-    if (playerRank !== this.lastReportedRank) {
+    const nowMs = performance.now();
+    const rankChanged = playerRank !== this.lastReportedRank;
+    if (rankChanged) {
       this.lastReportedRank = playerRank;
       useGameStore.getState().updateTelemetry({
         racePosition: playerRank,
@@ -466,59 +503,36 @@ export class CompetitionManager {
       });
     }
 
-    // Export real-time positions for AAA Minimap Radar & Leaderboard
-    const fullLeaderboard = entries.map((entry) => {
-      let x = 0;
-      let z = 0;
-      if (entry.isPlayer) {
-        x = this.playerVehicle.position.x;
-        z = this.playerVehicle.position.z;
-      } else {
-        const ai = this.aiCars.find((c) => c.id === entry.id);
-        if (ai) {
-          x = ai.position.x;
-          z = ai.position.z;
+    // Export real-time positions for AAA Minimap Radar & Leaderboard (throttled to ~15 Hz or on rank changes)
+    if (rankChanged || nowMs - this.lastLeaderboardUpdate > 66) {
+      this.lastLeaderboardUpdate = nowMs;
+      const fullLeaderboard = entries.map((entry) => {
+        let x = 0;
+        let z = 0;
+        if (entry.isPlayer) {
+          x = this.playerVehicle.position.x;
+          z = this.playerVehicle.position.z;
+        } else {
+          const ai = this.aiCars.find((c) => c.id === entry.id);
+          if (ai) {
+            x = ai.position.x;
+            z = ai.position.z;
+          }
         }
-      }
-      return {
-        ...entry,
-        x,
-        z,
-      };
-    });
-    useGameStore.getState().updateLeaderboard(fullLeaderboard);
+        return {
+          ...entry,
+          x,
+          z,
+        };
+      });
+      useGameStore.getState().updateLeaderboard(fullLeaderboard);
+    }
 
     return { playerRank, leaderboard: entries };
   }
 
   private resolveCarCollisions(onPlayerCollision?: (intensity: number, contactPos: THREE.Vector3) => void) {
-    interface VehicleCollider {
-      position: THREE.Vector3;
-      forwardVec: THREE.Vector3;
-      velocity: THREE.Vector3;
-      carScale: number;
-      isPlayer: boolean;
-      applyCollisionImpulse: (impulse: THREE.Vector3, impactPoint: THREE.Vector3) => void;
-    }
-
-    const allVehicles: VehicleCollider[] = [
-      {
-        position: this.playerVehicle.position,
-        forwardVec: this.playerVehicle.forwardVec,
-        velocity: this.playerVehicle.velocity,
-        carScale: this.playerVehicle.carScale,
-        isPlayer: true,
-        applyCollisionImpulse: (imp, pt) => this.playerVehicle.applyCollisionImpulse(imp, pt),
-      },
-      ...this.aiCars.map((car) => ({
-        position: car.position,
-        forwardVec: car.forwardVec,
-        velocity: car.velocity,
-        carScale: car.carScale,
-        isPlayer: false,
-        applyCollisionImpulse: (imp: THREE.Vector3, pt: THREE.Vector3) => car.applyCollisionImpulse(imp, pt),
-      })),
-    ];
+    const allVehicles = this.collidableVehicles;
 
     const isLaunchPhase = this.raceActiveTime < 1.6;
 

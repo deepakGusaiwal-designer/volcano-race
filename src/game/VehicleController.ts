@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { modelCache } from './ModelCache';
 import { soundEffects } from '../audio/SoundEffects';
 import { ParticleManager } from './ParticleManager';
 import { SkidmarkManager } from './SkidmarkManager';
@@ -202,7 +202,6 @@ export class VehicleController {
   }
 
   async loadCar(modelType: CarModelId = 'mazda', preservePosition: boolean = false): Promise<void> {
-    const loader = new GLTFLoader();
     let modelPath = '/models/mazda.glb';
     let baseScale = 1.0;
 
@@ -218,15 +217,11 @@ export class VehicleController {
     this.baseScaleFactor = baseScale;
     this.isSkinnedHotWheels = (modelType === 'iridium' || modelType === 'rd09');
 
-    return new Promise((resolve, reject) => {
-      loader.load(
-        modelPath,
-        (gltf) => {
-          while (this.mesh.children.length > 0) {
-            this.mesh.remove(this.mesh.children[0]);
-          }
+    const model = await modelCache.cloneModel(modelPath);
 
-          const model = gltf.scene;
+    while (this.mesh.children.length > 0) {
+      this.mesh.remove(this.mesh.children[0]);
+    }
 
           // In raw GLB coordinates, nose is at +Z.
           // Rotate by Math.PI around Y so nose points to -Z (Three.js standard forward):
@@ -327,18 +322,12 @@ export class VehicleController {
           roadFlood.position.set(0, 0.26 * this.carScale, -1.2 * this.carScale);
           this.mesh.add(roadFlood);
 
-          if (!preservePosition) {
-            this.setSpawn(new THREE.Vector3(-7.26, 0.1, 10.61), -Math.PI / 2);
-          } else {
-            this.mesh.position.copy(this.position);
-            this.mesh.quaternion.copy(this.quaternion);
-          }
-          resolve();
-        },
-        undefined,
-        (err) => reject(err)
-      );
-    });
+    if (!preservePosition) {
+      this.setSpawn(new THREE.Vector3(-7.26, 0.1, 10.61), -Math.PI / 2);
+    } else {
+      this.mesh.position.copy(this.position);
+      this.mesh.quaternion.copy(this.quaternion);
+    }
   }
 
   clearInput() {

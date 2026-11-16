@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { modelCache } from './ModelCache';
 import { ParticleManager } from './ParticleManager';
 import { useGameStore } from '../store/useGameStore';
 
@@ -73,7 +73,17 @@ export class AICarController {
   private rotMatrix = new THREE.Matrix4();
   private targetQuat = new THREE.Quaternion();
   private grounded = true;
+  private isGridGrounded = false;
   private suspensionRestLength = 0.026 * 0.14;
+
+  // Zero-allocation static scratch objects for 60 FPS animation loop
+  private static scratchRollQuat = new THREE.Quaternion();
+  private static scratchQSpin = new THREE.Quaternion();
+  private static scratchQSteer = new THREE.Quaternion();
+  private static readonly scratchAxisX = new THREE.Vector3(1, 0, 0);
+  private static readonly scratchAxisY = new THREE.Vector3(0, 1, 0);
+  private static readonly scratchAxisZ = new THREE.Vector3(0, 0, 1);
+  private static scratchRearPos = new THREE.Vector3();
 
   // AI Behaviors
   private currentLaneOffset: number;
@@ -107,7 +117,6 @@ export class AICarController {
   }
 
   async loadModel(): Promise<void> {
-    const loader = new GLTFLoader();
     let modelPath = '/models/mazda.glb';
     const rotY = Math.PI;
     let baseScaleFactor = 1.0;
@@ -120,79 +129,70 @@ export class AICarController {
       baseScaleFactor = 0.01030;
     }
 
-    return new Promise((resolve, reject) => {
-      loader.load(
-        modelPath,
-        (gltf) => {
-          while (this.mesh.children.length > 0) {
-            this.mesh.remove(this.mesh.children[0]);
+    const model = await modelCache.cloneModel(modelPath);
+
+    while (this.mesh.children.length > 0) {
+      this.mesh.remove(this.mesh.children[0]);
+    }
+
+    model.rotation.y = rotY;
+
+    const scale = this.carScale * baseScaleFactor;
+    model.scale.set(scale, scale, scale);
+
+    this.isSkinnedHotWheels = this.config.modelType === 'iridium' || this.config.modelType === 'rd09';
+
+    if (this.isSkinnedHotWheels) {
+      this.wheelLF = model.getObjectByName('BONE_FL_VIS_WHEEL_010_18') || null;
+      this.wheelRF = model.getObjectByName('BONE_FR_VIS_WHEEL_013_21') || null;
+      this.wheelLR = model.getObjectByName('BONE_BL_VIS_WHEEL_03_11') || null;
+      this.wheelRR = model.getObjectByName('BONE_BR_VIS_WHEEL_06_14') || null;
+    } else {
+      this.wheelLF = model.getObjectByName('WHEEL_LF') || null;
+      this.wheelRF = model.getObjectByName('WHEEL_RF') || null;
+      this.wheelLR = model.getObjectByName('WHEEL_LR') || null;
+      this.wheelRR = model.getObjectByName('WHEEL_RR') || null;
+    }
+
+    if (this.wheelLF) this.initialQuatLF.copy(this.wheelLF.quaternion);
+    if (this.wheelRF) this.initialQuatRF.copy(this.wheelRF.quaternion);
+    if (this.wheelLR) this.initialQuatLR.copy(this.wheelLR.quaternion);
+    if (this.wheelRR) this.initialQuatRR.copy(this.wheelRR.quaternion);
+
+    model.traverse((child) => {
+      if (child.name.includes('RIM_BLUR')) {
+        child.visible = false;
+      }
+
+      if ((child as THREE.Mesh).isMesh) {
+        const m = child as THREE.Mesh;
+        m.castShadow = true;
+        m.receiveShadow = true;
+
+        const mat = m.material as THREE.MeshStandardMaterial;
+        if (mat) {
+          const matName = (mat.name || '').toLowerCase();
+          if (
+            matName.includes('carpaint') ||
+            matName.includes('exterior') ||
+            matName.includes('livery') ||
+            matName.includes('body')
+          ) {
+            const clonedMat = mat.clone();
+            clonedMat.color.setHex(this.config.colorHex);
+            clonedMat.roughness = 0.22;
+            clonedMat.metalness = 0.45;
+            m.material = clonedMat;
+          } else if (matName.includes('glass')) {
+            mat.transparent = true;
+            mat.opacity = 0.65;
           }
-
-          const model = gltf.scene;
-          model.rotation.y = rotY;
-
-          const scale = this.carScale * baseScaleFactor;
-          model.scale.set(scale, scale, scale);
-
-          this.isSkinnedHotWheels = this.config.modelType === 'iridium' || this.config.modelType === 'rd09';
-
-          if (this.isSkinnedHotWheels) {
-            this.wheelLF = model.getObjectByName('BONE_FL_VIS_WHEEL_010_18') || null;
-            this.wheelRF = model.getObjectByName('BONE_FR_VIS_WHEEL_013_21') || null;
-            this.wheelLR = model.getObjectByName('BONE_BL_VIS_WHEEL_03_11') || null;
-            this.wheelRR = model.getObjectByName('BONE_BR_VIS_WHEEL_06_14') || null;
-          } else {
-            this.wheelLF = model.getObjectByName('WHEEL_LF') || null;
-            this.wheelRF = model.getObjectByName('WHEEL_RF') || null;
-            this.wheelLR = model.getObjectByName('WHEEL_LR') || null;
-            this.wheelRR = model.getObjectByName('WHEEL_RR') || null;
-          }
-
-          if (this.wheelLF) this.initialQuatLF.copy(this.wheelLF.quaternion);
-          if (this.wheelRF) this.initialQuatRF.copy(this.wheelRF.quaternion);
-          if (this.wheelLR) this.initialQuatLR.copy(this.wheelLR.quaternion);
-          if (this.wheelRR) this.initialQuatRR.copy(this.wheelRR.quaternion);
-
-          model.traverse((child) => {
-            if (child.name.includes('RIM_BLUR')) {
-              child.visible = false;
-            }
-
-            if ((child as THREE.Mesh).isMesh) {
-              const m = child as THREE.Mesh;
-              m.castShadow = true;
-              m.receiveShadow = true;
-
-              const mat = m.material as THREE.MeshStandardMaterial;
-              if (mat) {
-                const matName = (mat.name || '').toLowerCase();
-                if (
-                  matName.includes('carpaint') ||
-                  matName.includes('exterior') ||
-                  matName.includes('livery') ||
-                  matName.includes('body')
-                ) {
-                  const clonedMat = mat.clone();
-                  clonedMat.color.setHex(this.config.colorHex);
-                  clonedMat.roughness = 0.22;
-                  clonedMat.metalness = 0.45;
-                  m.material = clonedMat;
-                } else if (matName.includes('glass')) {
-                  mat.transparent = true;
-                  mat.opacity = 0.65;
-                }
-              }
-            }
-          });
-
-          this.modelRoot = model;
-          this.mesh.add(model);
-          resolve();
-        },
-        undefined,
-        (err) => reject(err)
-      );
+        }
+      }
     });
+
+    this.modelRoot = model;
+    this.mesh.add(model);
   }
 
   setCarScale(scale: number) {
@@ -237,6 +237,7 @@ export class AICarController {
     this.speedKmH = 0;
     this.velocity.set(0, 0, 0);
     this.grounded = true;
+    this.isGridGrounded = false;
     this.currentLap = 1;
     this.hasPassedMidpoint = false;
     this.isBoosting = false;
@@ -322,8 +323,8 @@ export class AICarController {
       this.velocity.set(0, 0, 0);
       this.raceActiveTime = 0;
 
-      // Ground probe to ensure tires rest perfectly flush on road surface at all times
-      if (colliders.length > 0) {
+      // Ground probe to ensure tires rest perfectly flush on road surface (executed once on placement)
+      if (!this.isGridGrounded && colliders.length > 0) {
         this.rayOrigin.set(this.position.x, this.position.y + 0.50, this.position.z);
         this.raycaster.set(this.rayOrigin, this.rayDir);
         this.raycaster.far = 1.8;
@@ -334,6 +335,7 @@ export class AICarController {
             if (this.scratchHitNormal.y >= 0.35) {
               this.position.y = h.point.y + this.suspensionRestLength;
               this.surfaceNormal.copy(this.scratchHitNormal);
+              this.isGridGrounded = true;
               break;
             }
           }
@@ -572,41 +574,41 @@ export class AICarController {
     const aiTargetRoll = THREE.MathUtils.clamp(-this.steerAngle * (Math.abs(this.speedKmH) / 160) * 0.035, -0.035, 0.035);
     this.bodyRollAngle += (aiTargetRoll - this.bodyRollAngle) * Math.min(1, dt * 8.0);
     if (Math.abs(this.bodyRollAngle) > 0.0005) {
-      const rollQuat = new THREE.Quaternion().setFromAxisAngle(this.alignedForward, this.bodyRollAngle);
-      this.targetQuat.multiply(rollQuat);
+      AICarController.scratchRollQuat.setFromAxisAngle(this.alignedForward, this.bodyRollAngle);
+      this.targetQuat.multiply(AICarController.scratchRollQuat);
     }
 
     this.mesh.quaternion.slerp(this.targetQuat, Math.min(1.0, dt * 16.0));
     this.quaternion.copy(this.mesh.quaternion);
 
-    // 9. Wheel Visual Spin & Dynamic Steering Alignment
+    // 9. Wheel Visual Spin & Dynamic Steering Alignment (Zero-allocation)
     const speedMps = this.speedKmH / 3.6;
     this.wheelSpinAngle += (speedMps * dt) / 0.33;
     const visualSteer = THREE.MathUtils.clamp(this.steerAngle, -0.55, 0.55);
 
     if (this.isSkinnedHotWheels) {
-      const qSpin = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), this.wheelSpinAngle);
-      const qSteer = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), visualSteer);
+      AICarController.scratchQSpin.setFromAxisAngle(AICarController.scratchAxisY, this.wheelSpinAngle);
+      AICarController.scratchQSteer.setFromAxisAngle(AICarController.scratchAxisZ, visualSteer);
 
-      if (this.wheelLF) this.wheelLF.quaternion.copy(qSteer).multiply(qSpin);
-      if (this.wheelRF) this.wheelRF.quaternion.copy(qSteer).multiply(qSpin);
-      if (this.wheelLR) this.wheelLR.quaternion.copy(qSpin);
-      if (this.wheelRR) this.wheelRR.quaternion.copy(qSpin);
+      if (this.wheelLF) this.wheelLF.quaternion.copy(AICarController.scratchQSteer).multiply(AICarController.scratchQSpin);
+      if (this.wheelRF) this.wheelRF.quaternion.copy(AICarController.scratchQSteer).multiply(AICarController.scratchQSpin);
+      if (this.wheelLR) this.wheelLR.quaternion.copy(AICarController.scratchQSpin);
+      if (this.wheelRR) this.wheelRR.quaternion.copy(AICarController.scratchQSpin);
     } else {
-      const qSpin = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), this.wheelSpinAngle);
-      const qSteer = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), -visualSteer);
+      AICarController.scratchQSpin.setFromAxisAngle(AICarController.scratchAxisX, this.wheelSpinAngle);
+      AICarController.scratchQSteer.setFromAxisAngle(AICarController.scratchAxisZ, -visualSteer);
 
-      if (this.wheelLF) this.wheelLF.quaternion.copy(qSteer).multiply(this.initialQuatLF).multiply(qSpin);
-      if (this.wheelRF) this.wheelRF.quaternion.copy(qSteer).multiply(this.initialQuatRF).multiply(qSpin);
-      if (this.wheelLR) this.wheelLR.quaternion.copy(this.initialQuatLR).multiply(qSpin);
-      if (this.wheelRR) this.wheelRR.quaternion.copy(this.initialQuatRR).multiply(qSpin);
+      if (this.wheelLF) this.wheelLF.quaternion.copy(AICarController.scratchQSteer).multiply(this.initialQuatLF).multiply(AICarController.scratchQSpin);
+      if (this.wheelRF) this.wheelRF.quaternion.copy(AICarController.scratchQSteer).multiply(this.initialQuatRF).multiply(AICarController.scratchQSpin);
+      if (this.wheelLR) this.wheelLR.quaternion.copy(this.initialQuatLR).multiply(AICarController.scratchQSpin);
+      if (this.wheelRR) this.wheelRR.quaternion.copy(this.initialQuatRR).multiply(AICarController.scratchQSpin);
     }
 
-    // 10. Particle Spawning: Boost Flames & Occasional Tire Drift Smoke
+    // 10. Particle Spawning: Boost Flames & Occasional Tire Drift Smoke (Zero-allocation)
     if (this.isBoosting) {
-      const rearPos = this.position.clone().addScaledVector(this.forwardVec, -2.15 * this.carScale);
-      rearPos.y = this.position.y + 0.11 * (this.carScale / 0.20);
-      this.particleManager.spawnBoostFlame(rearPos, this.forwardVec);
+      AICarController.scratchRearPos.copy(this.position).addScaledVector(this.forwardVec, -2.15 * this.carScale);
+      AICarController.scratchRearPos.y = this.position.y + 0.11 * (this.carScale / 0.20);
+      this.particleManager.spawnBoostFlame(AICarController.scratchRearPos, this.forwardVec);
     }
   }
 
