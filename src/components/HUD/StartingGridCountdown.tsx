@@ -36,13 +36,13 @@ export const StartingGridCountdown: React.FC = () => {
 
   return (
     <div
-      className={`fixed inset-0 z-40 flex flex-col items-center justify-center pointer-events-none select-none transition-opacity duration-300 ${
+      className={`fixed inset-0 z-40 flex flex-col items-center justify-start pt-6 md:pt-10 pointer-events-none select-none transition-opacity duration-300 ${
         isGo ? 'animate-out fade-out duration-700 fill-mode-forwards' : ''
       }`}
     >
-      {/* Background Subtle Vignette (Fades out immediately upon GO! so player sees road clearly) */}
+      {/* Background Subtle Vignette (Crystal clear view of rival cars on the starting grid) */}
       <div
-        className={`absolute inset-0 bg-black/35 backdrop-blur-[2px] pointer-events-none transition-opacity duration-300 ${
+        className={`absolute inset-0 bg-gradient-to-b from-black/50 via-transparent to-black/30 pointer-events-none transition-opacity duration-300 ${
           isGo ? 'opacity-0' : 'opacity-100'
         }`}
       />
@@ -50,7 +50,7 @@ export const StartingGridCountdown: React.FC = () => {
       {/* Starting Gantry Display */}
       <div className="relative flex flex-col items-center z-10 animate-in fade-in zoom-in-95 duration-300">
         {/* F1 Horizon Gantry Housing */}
-        <div className="bg-[#111317]/95 border-2 border-white/15 px-8 py-4 rounded-3xl shadow-[0_10px_40px_rgba(0,0,0,0.85)] flex flex-col items-center backdrop-blur-md">
+        <div className="bg-[#111317]/90 border-2 border-white/15 px-8 py-3 rounded-3xl shadow-[0_10px_40px_rgba(0,0,0,0.85)] flex flex-col items-center backdrop-blur-sm">
           {/* Header pill */}
           <div className="flex items-center space-x-2 text-[10px] font-mono tracking-widest text-gray-400 uppercase mb-3">
             <span

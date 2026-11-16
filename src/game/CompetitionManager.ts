@@ -249,7 +249,7 @@ export class CompetitionManager {
   resetGrid(direction: 'normal' | 'reverse' = this.trackDirection) {
     this.hasInitialPlayerU = false;
     this.lastPlayerU = 0;
-    this.lastReportedRank = -1;
+    this.lastReportedRank = 4; // Player starts in 4th position behind the 3 AI leaders
     this.playerHasPassedMidpoint = false;
     this.playerFinished = false;
     this.playerFinishRank = null;
@@ -259,6 +259,10 @@ export class CompetitionManager {
     for (const car of this.aiCars) {
       car.setSpawn(car.config.gridSlot, direction);
     }
+    useGameStore.getState().updateTelemetry({
+      racePosition: 4,
+      totalRacers: 4,
+    });
   }
 
   recordPlayerFinish(finishTime: number): number {

@@ -476,20 +476,28 @@ export class ForzaTrackVisuals {
     gantry.add(checkMesh);
 
     // Numbered Starting Grid Boxes along track spline
-    const gridSpacings = [3.2, 6.4, 9.6, 12.8];
-    gridSpacings.forEach((dist, idx) => {
-      const slot = idx + 1;
-      const deltaU = (dist / this.splineLength) * (direction === 'reverse' ? 1 : -1);
+    // Box 1 (Pole): 4.8m ahead (Slot 1)
+    // Box 2: 3.2m ahead (Slot 2)
+    // Box 3: 1.6m ahead (Slot 3)
+    // Box 4 (Player): 0.0m at start line (Slot 4)
+    const gridDefinitions = [
+      { slot: 1, dist: 4.8, side: -0.42 },
+      { slot: 2, dist: 3.2, side: 0.42 },
+      { slot: 3, dist: 1.6, side: -0.42 },
+      { slot: 4, dist: 0.0, side: 0.25 },
+    ];
+    gridDefinitions.forEach(({ slot, dist, side }) => {
+      const deltaU = (dist / this.splineLength) * (direction === 'reverse' ? -1 : 1);
       const gridU = (1.0 + deltaU) % 1.0;
 
       const gPt = this.trackSpline.getPointAt(gridU);
       const gTan = this.trackSpline.getTangentAt(gridU).normalize();
-      const gNorm = new THREE.Vector3(-gTan.z, 0, gTan.x).normalize();
-      const gHead = Math.atan2(gTan.x, gTan.z);
+      const driveDir = (direction === 'reverse' ? gTan.clone().negate() : gTan.clone()).normalize();
+      const gNorm = new THREE.Vector3(-driveDir.z, 0, driveDir.x).normalize();
+      const gHead = Math.atan2(driveDir.x, driveDir.z);
 
-      const lateralOffset = (slot % 2 === 1 ? 0.65 : -0.65);
-      const boxX = gPt.x + gNorm.x * lateralOffset;
-      const boxZ = gPt.z + gNorm.z * lateralOffset;
+      const boxX = gPt.x + gNorm.x * side;
+      const boxZ = gPt.z + gNorm.z * side;
       const gGround = this.probeGround(boxX, boxZ, gPt.y, colliders);
 
       const boxGeo = new THREE.PlaneGeometry(1.4, 2.4);

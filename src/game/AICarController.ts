@@ -59,6 +59,7 @@ export class AICarController {
   private scratchTargetPt = new THREE.Vector3();
   private scratchTangent = new THREE.Vector3();
   private scratchNormal = new THREE.Vector3();
+  private scratchHitNormal = new THREE.Vector3();
 
   // Physics & Raycasting
   private raycaster = new THREE.Raycaster();
@@ -212,19 +213,23 @@ export class AICarController {
   }
 
   setSpawn(gridSlot: number, _direction: 'normal' | 'reverse' = 'reverse') {
-    // Professional staggered F1/GT starting grid: 3.6m per row with alternating lane offsets
-    const rowBackMeters = gridSlot * 3.6;
-    const uSpawn = (1.0 - rowBackMeters / Math.max(10, this.splineLength)) % 1.0;
+    // Professional staggered GT starting grid ahead of player:
+    // Slot 1 (Pole / Viper): +4.8m ahead on Left lane
+    // Slot 2 (P2 / Ignis): +3.2m ahead on Right lane
+    // Slot 3 (P3 / Shadow): +1.6m ahead on Left lane
+    // (Player starts at Slot 4 / start line at 0m on Right lane)
+    const distAhead = (4 - gridSlot) * 1.6;
+    const uSpawn = (distAhead / Math.max(10, this.splineLength)) % 1.0;
     this.trackSpline.getPointAt(uSpawn, this.scratchPt);
     this.trackSpline.getTangentAt(uSpawn, this.scratchTangent).normalize();
     this.scratchNormal.set(-this.scratchTangent.z, 0, this.scratchTangent.x).normalize();
 
-    // Lateral staggering: Slot 1 Right (+0.42m), Slot 2 Left (-0.42m), Slot 3 Center-Right (+0.20m)
-    const lateralSide = gridSlot === 1 ? 0.42 : gridSlot === 2 ? -0.42 : 0.22;
+    // Lateral staggering: Slot 1 Left (-0.42m), Slot 2 Right (+0.42m), Slot 3 Left (-0.42m)
+    const lateralSide = gridSlot % 2 === 1 ? -0.42 : 0.42;
 
     this.position.set(
       this.scratchPt.x + this.scratchNormal.x * lateralSide,
-      this.scratchPt.y + 0.04,
+      0.05,
       this.scratchPt.z + this.scratchNormal.z * lateralSide
     );
     this.currentHeading = Math.atan2(-this.scratchTangent.x, -this.scratchTangent.z);
@@ -259,8 +264,7 @@ export class AICarController {
     if (this.wheelRR) this.wheelRR.quaternion.copy(this.initialQuatRR);
 
     this.progressU = uSpawn;
-    const normalizedProgress = this.progressU > 0.85 ? this.progressU - 1.0 : this.progressU;
-    this.totalProgress = 1.0 + normalizedProgress;
+    this.totalProgress = 1.0 + this.progressU;
 
     this.mesh.position.copy(this.position);
     this.forwardVec.set(-Math.sin(this.currentHeading), 0, -Math.cos(this.currentHeading)).normalize();
@@ -317,8 +321,34 @@ export class AICarController {
       this.speedKmH = 0;
       this.velocity.set(0, 0, 0);
       this.raceActiveTime = 0;
+
+      // Ground probe to ensure tires rest perfectly flush on road surface at all times
+      if (colliders.length > 0) {
+        this.rayOrigin.set(this.position.x, this.position.y + 0.50, this.position.z);
+        this.raycaster.set(this.rayOrigin, this.rayDir);
+        this.raycaster.far = 1.8;
+        const hits = this.raycaster.intersectObjects(colliders, true);
+        for (const h of hits) {
+          if (h.face) {
+            this.scratchHitNormal.copy(h.face.normal).transformDirection(h.object.matrixWorld).normalize();
+            if (this.scratchHitNormal.y >= 0.35) {
+              this.position.y = h.point.y + this.suspensionRestLength;
+              this.surfaceNormal.copy(this.scratchHitNormal);
+              break;
+            }
+          }
+        }
+      }
+
+      this.forwardVec.set(-Math.sin(this.currentHeading), 0, -Math.cos(this.currentHeading)).normalize();
+      this.rightVec.crossVectors(this.forwardVec, this.surfaceNormal).normalize();
+      this.alignedForward.crossVectors(this.surfaceNormal, this.rightVec).normalize();
+      this.localZ.copy(this.alignedForward).negate();
+      this.rotMatrix.makeBasis(this.rightVec, this.surfaceNormal, this.localZ);
+      this.mesh.quaternion.setFromRotationMatrix(this.rotMatrix);
+      this.quaternion.copy(this.mesh.quaternion);
+
       this.mesh.position.copy(this.position);
-      this.mesh.quaternion.copy(this.quaternion);
       return;
     }
 
@@ -503,24 +533,24 @@ export class AICarController {
       }
     }
 
-    // 7. Rock-Solid Grounding & Suspension (Direct from Spline Elevation, ZERO Void Drops)
-    const roadElevation = this.scratchPt.y + 0.04;
-    let targetY = roadElevation;
+    // 7. Ground Raycasting & Suspension (Always glides on asphalt, never falls through track)
+    const rayHeadroom = 0.50;
+    this.rayOrigin.set(this.position.x, this.position.y + rayHeadroom, this.position.z);
+    this.raycaster.set(this.rayOrigin, this.rayDir);
+    this.raycaster.far = 1.8;
+
+    let targetY = this.position.y;
     let targetNormal = this.surfaceNormal;
 
-    this.rayOrigin.set(this.position.x, roadElevation + 0.30, this.position.z);
-    this.raycaster.set(this.rayOrigin, this.rayDir);
-    this.raycaster.far = 0.85;
-
     if (colliders.length > 0) {
-      const hits = this.raycaster.intersectObjects(colliders, false);
-      if (hits.length > 0 && hits[0].face) {
-        const hitY = hits[0].point.y + this.suspensionRestLength;
-        // Verify hit is within 0.25m of asphalt road elevation (rejects cliff walls & bottom barriers)
-        if (Math.abs(hitY - roadElevation) < 0.25) {
-          targetY = hitY;
-          if (hits[0].face.normal.y > 0.40) {
-            targetNormal = hits[0].face.normal;
+      const hits = this.raycaster.intersectObjects(colliders, true);
+      for (const h of hits) {
+        if (h.face) {
+          this.scratchHitNormal.copy(h.face.normal).transformDirection(h.object.matrixWorld).normalize();
+          if (this.scratchHitNormal.y >= 0.35) {
+            targetY = h.point.y + this.suspensionRestLength;
+            targetNormal = this.scratchHitNormal;
+            break;
           }
         }
       }
