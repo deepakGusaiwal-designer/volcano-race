@@ -18,12 +18,14 @@ interface PauseModalProps {
   onResume: () => void;
   onRestart: () => void;
   onToggleTrackDirection: () => void;
+  onReturnToWelcome?: () => void;
 }
 
 export const PauseModal: React.FC<PauseModalProps> = ({
   onResume,
   onRestart,
   onToggleTrackDirection,
+  onReturnToWelcome,
 }) => {
   const paused = useGameStore((state) => state.paused);
   const isPauseOpen = useGameStore((state) => state.isPauseOpen);
@@ -128,13 +130,29 @@ export const PauseModal: React.FC<PauseModalProps> = ({
             <span>RESUME RACE (ESC)</span>
           </button>
 
-          {/* Restart */}
+          {/* Return to Start / Welcome Screen */}
           <button
-            onClick={handleRestart}
-            className="w-full py-3 bg-[#1e2026] hover:bg-[#272b33] text-white font-bold uppercase tracking-wider text-xs rounded-xl border border-white/10 flex items-center justify-center space-x-2 transition-all cursor-pointer"
+            onClick={() => {
+              soundEffects.playClick();
+              if (onReturnToWelcome) {
+                onReturnToWelcome();
+              } else {
+                onRestart();
+              }
+            }}
+            className="w-full py-3 bg-[#1e2026] hover:bg-[#272b33] text-white font-bold uppercase tracking-wider text-xs rounded-xl border border-white/10 hover:border-orange-500/50 flex items-center justify-center space-x-2 transition-all cursor-pointer shadow-md active:scale-95"
           >
             <RotateCcw className="w-4 h-4 text-orange-400" />
-            <span>RESTART FROM GRID (R)</span>
+            <span>RETURN TO START / WELCOME SCREEN</span>
+          </button>
+
+          {/* Quick Restart Race */}
+          <button
+            onClick={handleRestart}
+            className="w-full py-2.5 bg-white/5 hover:bg-white/10 text-gray-300 hover:text-white font-semibold uppercase tracking-wider text-[11px] rounded-xl border border-white/5 flex items-center justify-center space-x-2 transition-all cursor-pointer"
+          >
+            <RotateCcw className="w-3.5 h-3.5 text-gray-400" />
+            <span>RESTART RACE COUNTDOWN (R)</span>
           </button>
 
           {/* Change Vehicle */}

@@ -152,6 +152,19 @@ export class CompetitionManager {
   public playerFinished: boolean = false;
   public playerFinishRank: number | null = null;
   private playerHasPassedMidpoint: boolean = false;
+  public raceActiveTime = 0;
+  private lastCollisionSoundTime = 0;
+
+  // Zero-allocation scratch vectors
+  private scratchPlayerPt = new THREE.Vector3();
+  private scratchSphereA0 = new THREE.Vector3();
+  private scratchSphereA1 = new THREE.Vector3();
+  private scratchSphereB0 = new THREE.Vector3();
+  private scratchSphereB1 = new THREE.Vector3();
+  private scratchNormVec = new THREE.Vector3();
+  private scratchContactPos = new THREE.Vector3();
+  private scratchImpulseA = new THREE.Vector3();
+  private scratchImpulseB = new THREE.Vector3();
 
   // AI Competitor configurations: balanced racing lanes + fierce competitive skill tiers
   private configs: AICarConfig[] = [
@@ -241,6 +254,8 @@ export class CompetitionManager {
     this.playerFinished = false;
     this.playerFinishRank = null;
     this.finishedRacers = [];
+    this.raceActiveTime = 0;
+    this.lastCollisionSoundTime = 0;
     for (const car of this.aiCars) {
       car.setSpawn(car.config.gridSlot, direction);
     }
@@ -271,13 +286,12 @@ export class CompetitionManager {
     let bestU = this.lastPlayerU;
     let minDist = Infinity;
 
-    // Fast localized search window around previous frame's progress for 60 FPS performance
+    // Fast localized search window around previous frame's progress for 60 FPS performance (zero allocation)
     if (this.hasInitialPlayerU) {
-      // Vehicle travels forward along spline, allow small reverse window and forward window
-      for (let du = -0.025; du <= 0.045; du += 0.004) {
+      for (let du = -0.025; du <= 0.045; du += 0.005) {
         const u = (this.lastPlayerU + du + 1.0) % 1.0;
-        const pt = this.trackSpline.getPointAt(u);
-        const d = Math.hypot(pt.x - playerPos.x, pt.z - playerPos.z);
+        this.trackSpline.getPointAt(u, this.scratchPlayerPt);
+        const d = Math.hypot(this.scratchPlayerPt.x - playerPos.x, this.scratchPlayerPt.z - playerPos.z);
         if (d < minDist) {
           minDist = d;
           bestU = u;
@@ -286,10 +300,10 @@ export class CompetitionManager {
 
       // If within normal track boundaries, refine locally
       if (minDist < 8.0) {
-        for (let du = -0.004; du <= 0.004; du += 0.0005) {
+        for (let du = -0.003; du <= 0.003; du += 0.0006) {
           const testU = (bestU + du + 1.0) % 1.0;
-          const pt = this.trackSpline.getPointAt(testU);
-          const d = Math.hypot(pt.x - playerPos.x, pt.z - playerPos.z);
+          this.trackSpline.getPointAt(testU, this.scratchPlayerPt);
+          const d = Math.hypot(this.scratchPlayerPt.x - playerPos.x, this.scratchPlayerPt.z - playerPos.z);
           if (d < minDist) {
             minDist = d;
             bestU = testU;
@@ -302,11 +316,11 @@ export class CompetitionManager {
 
     // Coarse global search fallback (first frame or after respawn/teleport)
     minDist = Infinity;
-    const coarseSamples = 120;
+    const coarseSamples = 72;
     for (let i = 0; i < coarseSamples; i++) {
       const u = i / coarseSamples;
-      const pt = this.trackSpline.getPointAt(u);
-      const d = Math.hypot(pt.x - playerPos.x, pt.z - playerPos.z);
+      this.trackSpline.getPointAt(u, this.scratchPlayerPt);
+      const d = Math.hypot(this.scratchPlayerPt.x - playerPos.x, this.scratchPlayerPt.z - playerPos.z);
       if (d < minDist) {
         minDist = d;
         bestU = u;
@@ -314,10 +328,10 @@ export class CompetitionManager {
     }
 
     // Fine local search for sub-meter progress precision
-    for (let du = -0.012; du <= 0.012; du += 0.001) {
+    for (let du = -0.012; du <= 0.012; du += 0.002) {
       const testU = (bestU + du + 1.0) % 1.0;
-      const pt = this.trackSpline.getPointAt(testU);
-      const d = Math.hypot(pt.x - playerPos.x, pt.z - playerPos.z);
+      this.trackSpline.getPointAt(testU, this.scratchPlayerPt);
+      const d = Math.hypot(this.scratchPlayerPt.x - playerPos.x, this.scratchPlayerPt.z - playerPos.z);
       if (d < minDist) {
         minDist = d;
         bestU = testU;
@@ -373,10 +387,13 @@ export class CompetitionManager {
       car.update(delta, colliders, this.playerVehicle.position, playerTotalProgress, allRacers);
     }
 
-    // 3. High-Impact Forza Horizon Multi-Car Physical Collision Engine (Active only during race)
+    // 3. High-Impact Multi-Car Physical Collision Engine (Active only during race)
     const gState = useGameStore.getState().gameState;
     if (gState === 'racing') {
+      this.raceActiveTime += delta;
       this.resolveCarCollisions(onPlayerCollision);
+    } else {
+      this.raceActiveTime = 0;
     }
 
     // 4. Compute Live Race Standings
@@ -499,6 +516,8 @@ export class CompetitionManager {
       })),
     ];
 
+    const isLaunchPhase = this.raceActiveTime < 1.6;
+
     for (let i = 0; i < allVehicles.length; i++) {
       for (let j = i + 1; j < allVehicles.length; j++) {
         const vA = allVehicles[i];
@@ -516,15 +535,14 @@ export class CompetitionManager {
         const rSphereB = 1.05 * vB.carScale;
         const collisionRadius = rSphereA + rSphereB;
 
-        const spheresA = [
-          new THREE.Vector3().copy(vA.position).addScaledVector(vA.forwardVec, dAxleA),
-          new THREE.Vector3().copy(vA.position).addScaledVector(vA.forwardVec, -dAxleA),
-        ];
+        this.scratchSphereA0.copy(vA.position).addScaledVector(vA.forwardVec, dAxleA);
+        this.scratchSphereA1.copy(vA.position).addScaledVector(vA.forwardVec, -dAxleA);
 
-        const spheresB = [
-          new THREE.Vector3().copy(vB.position).addScaledVector(vB.forwardVec, dAxleB),
-          new THREE.Vector3().copy(vB.position).addScaledVector(vB.forwardVec, -dAxleB),
-        ];
+        this.scratchSphereB0.copy(vB.position).addScaledVector(vB.forwardVec, dAxleB);
+        this.scratchSphereB1.copy(vB.position).addScaledVector(vB.forwardVec, -dAxleB);
+
+        const spheresA = [this.scratchSphereA0, this.scratchSphereA1];
+        const spheresB = [this.scratchSphereB0, this.scratchSphereB1];
 
         let minSphereDist = Infinity;
         let bestPair: { sA: THREE.Vector3; sB: THREE.Vector3 } | null = null;
@@ -545,58 +563,64 @@ export class CompetitionManager {
           // Normal points from B to A in XZ plane
           const nx = (bestPair.sA.x - bestPair.sB.x) / minSphereDist;
           const nz = (bestPair.sA.z - bestPair.sB.z) / minSphereDist;
-          const normVec = new THREE.Vector3(nx, 0, nz);
+          this.scratchNormVec.set(nx, 0, nz);
 
           // Contact position
-          const contactPos = new THREE.Vector3(
+          this.scratchContactPos.set(
             (bestPair.sA.x + bestPair.sB.x) * 0.5,
             Math.max(vA.position.y, vB.position.y) + 0.06,
             (bestPair.sA.z + bestPair.sB.z) * 0.5
           );
 
-          // 1. Physical Depenetration (push away along normal)
-          const push = penetration * 0.55;
+          // 1. Soft Physical Depenetration (capped so cars never teleport)
+          const maxPush = isLaunchPhase ? 0.022 : 0.038;
+          const push = Math.min(maxPush, penetration * 0.45);
           vA.position.x += nx * push;
           vA.position.z += nz * push;
           vB.position.x -= nx * push;
           vB.position.z -= nz * push;
+
+          // In launch phase, only separate softly without explosive collision impulses
+          if (isLaunchPhase) continue;
 
           // 2. Relative Velocity & Impulse
           const relVelX = vA.velocity.x - vB.velocity.x;
           const relVelZ = vA.velocity.z - vB.velocity.z;
           const normalVel = relVelX * nx + relVelZ * nz;
 
-          // Penetration approach velocity gives solid separation kick even at rubbing speeds
-          const approachSpeed = Math.max(0.65, -normalVel + penetration * 18.0);
-          const impactIntensity = THREE.MathUtils.clamp(approachSpeed / 10.0, 0.25, 1.0);
+          // Only apply impulse if cars are moving toward each other
+          if (normalVel < -0.1) {
+            const restitution = 0.32;
+            const approachSpeed = -normalVel;
+            const impulseMag = Math.min(4.8, (1.0 + restitution) * approachSpeed * 0.45);
 
-          // Forza Horizon restitution (e = 0.52 gives punchy kinetic bounce)
-          const restitution = 0.52;
-          const impulseMag = Math.min(8.5, (1.0 + restitution) * approachSpeed * 0.55);
+            const nImpX = nx * impulseMag;
+            const nImpZ = nz * impulseMag;
 
-          const normalImpulse = new THREE.Vector3(nx * impulseMag, 0, nz * impulseMag);
+            // Damped tangential friction
+            const tangVelX = relVelX - normalVel * nx;
+            const tangVelZ = relVelZ - normalVel * nz;
+            const tImpX = tangVelX * 0.2;
+            const tImpZ = tangVelZ * 0.2;
 
-          // 3. Tangential Friction Impulse (reduces car gluing / sliding along hulls)
-          const tangVelX = relVelX - normalVel * nx;
-          const tangVelZ = relVelZ - normalVel * nz;
-          const tangImpulse = new THREE.Vector3(tangVelX * 0.25, 0, tangVelZ * 0.25);
+            this.scratchImpulseA.set(nImpX - tImpX, 0, nImpZ - tImpZ);
+            this.scratchImpulseB.set(-nImpX + tImpX, 0, -nImpZ + tImpZ);
 
-          // Apply impulses to both vehicles
-          const impulseOnA = new THREE.Vector3().add(normalImpulse).sub(tangImpulse);
-          const impulseOnB = new THREE.Vector3().sub(normalImpulse).add(tangImpulse);
+            vA.applyCollisionImpulse(this.scratchImpulseA, this.scratchContactPos);
+            vB.applyCollisionImpulse(this.scratchImpulseB, this.scratchContactPos);
 
-          vA.applyCollisionImpulse(impulseOnA, contactPos);
-          vB.applyCollisionImpulse(impulseOnB, contactPos);
+            // Rate-limited audio, VFX, and camera shake
+            const now = performance.now();
+            if (impulseMag > 1.2 && now - this.lastCollisionSoundTime > 140) {
+              this.lastCollisionSoundTime = now;
+              const intensity = THREE.MathUtils.clamp(impulseMag / 4.0, 0.3, 1.0);
+              this.particleManager.spawnCollisionSparks(this.scratchContactPos, this.scratchNormVec, intensity);
+              soundEffects.playCollision(intensity);
 
-          // 4. VFX: Explosive Shower of Incandescent Sparks & Smoke
-          this.particleManager.spawnCollisionSparks(contactPos, normVec, impactIntensity);
-
-          // 5. Audio: Heavy Metal Collision Thud & Scrape
-          soundEffects.playCollision(impactIntensity);
-
-          // 6. Camera Trauma & Vibration
-          if ((vA.isPlayer || vB.isPlayer) && onPlayerCollision) {
-            onPlayerCollision(impactIntensity, contactPos);
+              if ((vA.isPlayer || vB.isPlayer) && onPlayerCollision) {
+                onPlayerCollision(intensity, this.scratchContactPos);
+              }
+            }
           }
         }
       }

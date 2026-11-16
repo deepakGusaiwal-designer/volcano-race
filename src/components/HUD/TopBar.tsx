@@ -9,6 +9,7 @@ import {
   VolumeX,
   Compass,
   Trophy,
+  Home,
 } from 'lucide-react';
 import { useGameStore } from '../../store/useGameStore';
 import { soundEffects } from '../../audio/SoundEffects';
@@ -17,12 +18,14 @@ interface TopBarProps {
   onToggleCamera: () => void;
   onReset: () => void;
   onToggleTrackDirection: () => void;
+  onReturnToWelcome?: () => void;
 }
 
 export const TopBar: React.FC<TopBarProps> = ({
   onToggleCamera,
   onReset,
   onToggleTrackDirection,
+  onReturnToWelcome,
 }) => {
   const gameState = useGameStore((state) => state.gameState);
   const paused = useGameStore((state) => state.paused);
@@ -51,6 +54,21 @@ export const TopBar: React.FC<TopBarProps> = ({
 
   return (
     <div className="flex items-center space-x-2 pointer-events-auto select-none">
+      {/* Return to Start / Welcome Screen Pill */}
+      {onReturnToWelcome && (
+        <button
+          onClick={() => {
+            soundEffects.playClick();
+            onReturnToWelcome();
+          }}
+          className="flex items-center space-x-1.5 bg-[#14161a]/85 hover:bg-[#20232a] backdrop-blur-md px-2.5 py-1 rounded-xl border border-white/10 hover:border-orange-500/50 text-[10.5px] font-bold text-gray-200 transition-all cursor-pointer shadow-lg active:scale-95"
+          title="Return to Welcome Screen"
+        >
+          <Home className="w-3 h-3 text-orange-400" />
+          <span className="hidden sm:inline">MENU</span>
+        </button>
+      )}
+
       {/* Pause Pill */}
       <button
         onClick={() => {

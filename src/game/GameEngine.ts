@@ -48,9 +48,10 @@ export class GameEngine {
   private raceStartTime = 0;
   private totalRaceTime = 0;
   private isFinished = false;
-  private welcomeAngle = 0;
+  private welcomeUnderglowLight: THREE.PointLight | null = null;
   private countdownTimer: number | null = null;
   private countdownClearTimeout: number | null = null;
+  private rivalsLoadPromise: Promise<void> | null = null;
 
   // FPS & Performance Profiling
   private frameCount = 0;
@@ -81,6 +82,7 @@ export class GameEngine {
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.0));
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFShadowMap; // Hardware-filtered 2x2 shadow map, dramatically faster than PCFSoft
+    this.renderer.shadowMap.autoUpdate = false; // Throttled to every 2nd frame to eliminate 60fps GPU fillrate churn
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.0;
     this.container.appendChild(this.renderer.domElement);
@@ -164,9 +166,9 @@ export class GameEngine {
     const store = useGameStore.getState();
 
     try {
-      store.setLoading(true, 'Loading Volcano Track & Terrain...', 20);
+      store.setLoading(true, 'Loading Volcano Track & Terrain...', 30);
       await this.track.loadTrack((progress) => {
-        store.setLoading(true, 'Loading Volcano Track...', 20 + Math.round(progress * 40));
+        store.setLoading(true, 'Loading Volcano Track...', 30 + Math.round(progress * 40));
       });
 
       this.vehicle.setColliders(this.track.colliders, this.track.barriers);
@@ -175,35 +177,58 @@ export class GameEngine {
 
       const initialCarId = store.carId || 'mazda';
       const initialCarName = CAR_PRESETS[initialCarId]?.name || 'Mazda LM Vision';
-      store.setLoading(true, `Loading ${initialCarName} Model...`, 65);
+      store.setLoading(true, `Loading ${initialCarName}...`, 75);
       await this.vehicle.loadCar(initialCarId);
 
-      store.setLoading(true, 'Loading Competitor Racing Fleet...', 80);
-      await this.competitionManager.loadCompetitors((loaded, total) => {
-        store.setLoading(true, `Loading Rivals (${loaded}/${total})...`, 80 + Math.round((loaded / total) * 16));
-      });
+      // Pre-compile WebGL shaders to eliminate initial-render freeze
+      store.setLoading(true, 'Igniting Shaders & Lighting...', 92);
+      try {
+        await (this.renderer as any).compileAsync(this.scene, this.camera);
+      } catch {
+        this.renderer.compile(this.scene, this.camera);
+      }
 
       // Default to Reverse Track Circuit start mode as requested
       this.track.setTrackDirection('reverse');
-      this.competitionManager.setTrackDirection('reverse');
       this.vehicle.setSpawn(this.track.spawnPosition, this.track.spawnHeading);
-      this.competitionManager.resetGrid('reverse');
 
+      // Dismiss loading screen immediately: Show the NFS Underground Start Screen right away!
       store.setLoading(false);
       store.setGameState('welcome');
       store.setNotification('WELCOME TO VOLCANO GRAND PRIX! 🏁 Click START RACE to ignite engine');
 
       this.startLoop();
+
+      // Load AI rivals asynchronously in the background so player never waits!
+      this.rivalsLoadPromise = this.competitionManager.loadCompetitors().then(async () => {
+        this.competitionManager.setTrackDirection('reverse');
+        this.competitionManager.resetGrid('reverse');
+        // Pre-compile competitor shaders in background WebGL driver threads to eliminate start hitch
+        if (this.renderer && (this.renderer as any).compileAsync) {
+          for (const car of this.competitionManager.aiCars) {
+            await (this.renderer as any).compileAsync(car.mesh, this.camera, this.scene);
+          }
+        }
+      }).catch((err) => {
+        console.warn('Background competitor fleet load notice:', err);
+      });
     } catch (err) {
       console.error('Failed to initialize game engine:', err);
       store.setLoading(false, 'Failed to load assets.');
     }
   }
 
-  startRaceCountdown() {
+  async startRaceCountdown() {
     const store = useGameStore.getState();
     soundEffects.init();
     soundEffects.resume();
+
+    // If competitor rivals are still downloading in the background, await their completion
+    if (this.rivalsLoadPromise) {
+      store.setNotification('Finalizing Starting Grid Fleet... 🏎️');
+      await this.rivalsLoadPromise;
+      this.rivalsLoadPromise = null;
+    }
 
     // 1. Clear any active countdown timer or pending GO banner clear timeout
     if (this.countdownTimer !== null) {
@@ -436,7 +461,6 @@ export class GameEngine {
     this.lapStartTime = performance.now();
     this.raceStartTime = performance.now();
     this.isFinished = false;
-    this.welcomeAngle = 0;
 
     this.vehicle.clearInput();
     this.vehicle.setSpawn(this.track.spawnPosition, this.track.spawnHeading);
@@ -461,7 +485,11 @@ export class GameEngine {
 
   returnToStartingGrid() {
     this.resetRace();
-    useGameStore.getState().setGameState('welcome');
+    const store = useGameStore.getState();
+    store.setPaused(false);
+    store.setPauseOpen(false);
+    store.setGameState('welcome');
+    store.setNotification('Returned to Starting Grid 🏁');
   }
 
   setCarPaint(hexColor: string) {
@@ -520,21 +548,66 @@ export class GameEngine {
         this.lastFpsTime = now;
       }
 
-      // Welcome State: Cinematic Camera Orbit around starting grid
+      // Welcome State: NFS Underground Cinematic Low-Angle Street Racer Hero View
+      // Low ground stance, tight framing on the front-three-quarter beauty angle, NO aerial rotating movement!
       if (store.gameState === 'welcome') {
-        this.welcomeAngle += delta * 0.42;
         const carPos = this.vehicle.position;
-        const radius = 9.2;
-        const camHeight = 3.2;
-        this.camera.position.set(
-          carPos.x + Math.sin(this.welcomeAngle) * radius,
-          carPos.y + camHeight,
-          carPos.z + Math.cos(this.welcomeAngle) * radius
-        );
-        this.camera.lookAt(carPos.x, carPos.y + 0.9, carPos.z);
+        const carQuat = this.vehicle.mesh.quaternion;
+        const s = this.vehicle.carScale;
+
+        // Subtle, elegant cinematic breathing (micro-sway, not rotation)
+        const t = now * 0.001;
+        const swayX = Math.sin(t * 0.45) * 0.22;
+        const swayY = Math.cos(t * 0.65) * 0.08;
+        const swayZ = Math.sin(t * 0.35) * 0.16;
+
+        // In car coordinates: -Z is front, +X is right, +Y is up
+        // Position camera in front and slightly to the right of the car, low to the asphalt
+        const localCamOffset = new THREE.Vector3(
+          (3.3 + swayX) * s,
+          (1.85 + swayY) * s,
+          (-5.4 + swayZ) * s
+        ).applyQuaternion(carQuat);
+
+        this.camera.position.copy(carPos).add(localCamOffset);
+
+        // Look at the front hood and badge of the car
+        const localLookOffset = new THREE.Vector3(
+          0,
+          0.72 * s,
+          -0.6 * s
+        ).applyQuaternion(carQuat);
+
+        this.camera.lookAt(carPos.x + localLookOffset.x, carPos.y + localLookOffset.y, carPos.z + localLookOffset.z);
+
+        // NFS Underground Street Neon Underglow
+        if (!this.welcomeUnderglowLight) {
+          this.welcomeUnderglowLight = new THREE.PointLight(0x00f0ff, 3.8, 4.2 * s, 1.8);
+          this.scene.add(this.welcomeUnderglowLight);
+        }
+
+        // Match underglow hue with active vehicle preset
+        const currentCarId = store.carId;
+        if (currentCarId === 'mazda') {
+          this.welcomeUnderglowLight.color.setHex(0xff1e38); // Neon Crimson
+        } else if (currentCarId === 'iridium') {
+          this.welcomeUnderglowLight.color.setHex(0x00f0ff); // Electric Cyan
+        } else {
+          this.welcomeUnderglowLight.color.setHex(0xff6600); // Volcanic Orange
+        }
+
+        this.welcomeUnderglowLight.position.set(carPos.x, carPos.y + 0.08 * s, carPos.z);
+        this.welcomeUnderglowLight.intensity = 3.6 + Math.sin(t * 4.0) * 0.6;
+
         this.track.update(delta, this.camera, this.vehicle.position, 0);
+        if (this.frameCount % 2 === 0) {
+          this.renderer.shadowMap.needsUpdate = true;
+        }
         this.renderer.render(this.scene, this.camera);
         return;
+      } else if (this.welcomeUnderglowLight && this.welcomeUnderglowLight.intensity > 0) {
+        // Disable welcome underglow once race starts
+        this.welcomeUnderglowLight.intensity = 0;
       }
 
       // Paused State: Freeze dynamic world but render frame
@@ -675,7 +748,11 @@ export class GameEngine {
         this.magmaLight.intensity = 3.2 + Math.sin(now * 0.0035) * 0.45;
       }
 
-      // 6. Render
+      // 6. Dynamic Shadow Map Throttling (renders every 2nd frame, cutting shadow GPU fillrate load by 50%)
+      if (this.frameCount % 2 === 0) {
+        this.renderer.shadowMap.needsUpdate = true;
+      }
+
       this.renderer.render(this.scene, this.camera);
 
       // 7. Telemetry Store Update (throttled to ~30 Hz for responsive HUD metrics)
@@ -725,6 +802,11 @@ export class GameEngine {
     this.hotWheelsPickupManager.dispose();
     this.skidmarkManager.dispose();
     this.lightTrailManager.dispose();
+    if (this.welcomeUnderglowLight) {
+      this.scene.remove(this.welcomeUnderglowLight);
+      this.welcomeUnderglowLight.dispose();
+      this.welcomeUnderglowLight = null;
+    }
     this.vehicle.dispose();
     this.renderer.dispose();
     if (this.renderer.domElement.parentElement) {

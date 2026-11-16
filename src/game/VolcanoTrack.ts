@@ -1,9 +1,15 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { computeBoundsTree, disposeBoundsTree, acceleratedRaycast } from 'three-mesh-bvh';
 import { CheckpointDef } from '../types/game';
 import { soundEffects } from '../audio/SoundEffects';
 import { ForzaTrackVisuals } from './ForzaTrackVisuals';
 import { useGameStore } from '../store/useGameStore';
+
+// Bind BVH accelerated raycasting to Three.js BufferGeometry & Mesh prototypes
+(THREE.BufferGeometry.prototype as any).computeBoundsTree = computeBoundsTree;
+(THREE.BufferGeometry.prototype as any).disposeBoundsTree = disposeBoundsTree;
+THREE.Mesh.prototype.raycast = acceleratedRaycast;
 
 export class VolcanoTrack {
   public model: THREE.Group = new THREE.Group();
@@ -455,6 +461,20 @@ export class VolcanoTrack {
                 s.applyMatrix4(m.matrixWorld);
                 m.userData.worldSphere = s;
               }
+            }
+          });
+
+          // Accelerate raycasting by 10x-50x using Bounding Volume Hierarchy (BVH) spatial indexing
+          this.colliders.forEach((obj) => {
+            const m = obj as THREE.Mesh;
+            if (m.isMesh && m.geometry && !(m.geometry as any).boundsTree) {
+              (m.geometry as any).computeBoundsTree();
+            }
+          });
+          this.barriers.forEach((obj) => {
+            const m = obj as THREE.Mesh;
+            if (m.isMesh && m.geometry && !(m.geometry as any).boundsTree) {
+              (m.geometry as any).computeBoundsTree();
             }
           });
 
@@ -961,6 +981,18 @@ export class VolcanoTrack {
   }
 
   dispose() {
+    this.colliders.forEach((obj) => {
+      const m = obj as THREE.Mesh;
+      if (m.isMesh && m.geometry && (m.geometry as any).disposeBoundsTree) {
+        (m.geometry as any).disposeBoundsTree();
+      }
+    });
+    this.barriers.forEach((obj) => {
+      const m = obj as THREE.Mesh;
+      if (m.isMesh && m.geometry && (m.geometry as any).disposeBoundsTree) {
+        (m.geometry as any).disposeBoundsTree();
+      }
+    });
     this.checkpointMarkers.forEach((m) => {
       this.scene.remove(m);
     });

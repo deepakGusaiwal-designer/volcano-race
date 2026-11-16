@@ -18,9 +18,9 @@ export const RoadHint: React.FC = memo(() => {
   const textColor = isBrake ? 'text-red-400' : isCaution ? 'text-amber-300' : 'text-cyan-300';
 
   return (
-    <div className="flex justify-center w-full pointer-events-none transition-all duration-200">
+    <div className="pointer-events-none transition-all duration-200 shrink-0">
       <div
-        className={`flex items-center space-x-2.5 px-3 py-1.5 rounded-2xl bg-black/85 backdrop-blur-md border ${borderColor} text-white font-sans`}
+        className={`flex items-center space-x-2.5 px-3 py-1.5 rounded-2xl bg-black/85 backdrop-blur-md border ${borderColor} text-white font-sans shadow-xl`}
       >
         {/* Animated Directional Arrows */}
         <div className="flex items-center text-base font-black tracking-tighter">

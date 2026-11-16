@@ -115,6 +115,8 @@ export const App: React.FC = () => {
         <WelcomeScreen
           onStartRace={handleStartRace}
           onToggleTrackDirection={handleToggleTrackDirection}
+          onSelectCar={(id) => engineRef.current?.switchCar(id)}
+          onSelectPaint={(hex) => engineRef.current?.setCarPaint(hex)}
         />
       )}
 
@@ -124,24 +126,22 @@ export const App: React.FC = () => {
       {/* In-Game Racing HUD Elements */}
       {!isLoading && (gameState === 'racing' || gameState === 'paused') && (
         <div className="absolute inset-0 pointer-events-none p-4 sm:p-6 flex flex-col justify-between z-10">
-          {/* Top Row: Lap Counter (Left), Road Guidance (Center), Action Pills TopBar (Right) */}
+          {/* Top Row: Left Cluster (LapCounter + Road Guidance), Center Toast Slot, Right Cluster (TopBar) */}
           <div className="flex items-start justify-between w-full pointer-events-auto">
-            <LapCounter />
-            <div className="flex-1 flex justify-center px-4">
+            <div className="flex items-start space-x-2.5 sm:space-x-3">
+              <LapCounter />
               <RoadHint />
             </div>
             <TopBar
               onToggleCamera={handleToggleCamera}
               onReset={handleReset}
               onToggleTrackDirection={handleToggleTrackDirection}
+              onReturnToWelcome={handleReturnToGrid}
             />
           </div>
 
           {/* Stunt & Skill Combo Feed (Top Right) */}
           <StuntFeed />
-
-          {/* Center Notifications */}
-          <NotificationToast />
 
           {/* Bottom Area: Live Radar MiniMap (Left) & Speedometer (Right) */}
           <div className="flex items-end justify-between w-full pointer-events-auto">
@@ -159,6 +159,7 @@ export const App: React.FC = () => {
       <PauseModal
         onResume={handleResumeRace}
         onRestart={handleReset}
+        onReturnToWelcome={handleReturnToGrid}
         onToggleTrackDirection={handleToggleTrackDirection}
       />
 
@@ -173,6 +174,9 @@ export const App: React.FC = () => {
         onSelectCar={(id) => engineRef.current?.switchCar(id)}
         onSelectPaint={(hex) => engineRef.current?.setCarPaint(hex)}
       />
+
+      {/* Sonner Top Alerts & Messages */}
+      <NotificationToast />
 
       {/* Vercel Web Analytics */}
       <Analytics />
